@@ -93,8 +93,184 @@ const TOOLS = [
       type: 'object',
       properties: {}
     }
+  },
+  {
+    name: 'semantic_search_filtered',
+    description: 'Search memory with semantic similarity and metadata filters (people, topics, action types)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'The search query to find semantically similar thoughts'
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum number of results to return (default: 10)',
+          default: 10
+        },
+        filters: {
+          type: 'object',
+          properties: {
+            people: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Match any extracted person name'
+            },
+            topics: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Match any extracted topic name'
+            },
+            action_types: {
+              type: 'array',
+              items: { type: 'string', enum: ['task', 'decision', 'commitment', 'question'] },
+              description: 'Match any extracted action item type'
+            }
+          }
+        }
+      },
+      required: ['query']
+    }
+  },
+  {
+    name: 'get_metadata_stats',
+    description: 'Get metadata statistics and available filters (people, topics, action items)',
+    inputSchema: {
+      type: 'object',
+      properties: {}
+    }
   }
 ];
+
+async function createQueryEmbedding(query) {
+  if (!openai) {
+    throw new Error('OPENAI_API_KEY is required for semantic search');
+  }
+
+  const embeddingResponse = await openai.embeddings.create({
+    model: 'text-embedding-3-large',
+    input: query,
+    dimensions: 3072,
+  });
+
+  return `[${embeddingResponse.data[0].embedding.join(',')}]`;
+}
+
+function buildMetadataFilterClause(filters = {}, startingIndex = 3) {
+  const conditions = ['embedding IS NOT NULL'];
+  const values = [];
+  let nextIndex = startingIndex;
+
+  if (filters.people?.length > 0) {
+    conditions.push(`EXISTS (
+      SELECT 1
+      FROM jsonb_array_elements(COALESCE(metadata->'extracted'->'people', '[]'::jsonb)) AS person
+      WHERE LOWER(person->>'name') = ANY($${nextIndex}::text[])
+    )`);
+    values.push(filters.people.map((person) => person.toLowerCase()));
+    nextIndex++;
+  }
+
+  if (filters.topics?.length > 0) {
+    conditions.push(`EXISTS (
+      SELECT 1
+      FROM jsonb_array_elements(COALESCE(metadata->'extracted'->'topics', '[]'::jsonb)) AS topic
+      WHERE LOWER(topic->>'name') = ANY($${nextIndex}::text[])
+    )`);
+    values.push(filters.topics.map((topic) => topic.toLowerCase()));
+    nextIndex++;
+  }
+
+  if (filters.action_types?.length > 0) {
+    conditions.push(`EXISTS (
+      SELECT 1
+      FROM jsonb_array_elements(COALESCE(metadata->'extracted'->'action_items', '[]'::jsonb)) AS action
+      WHERE LOWER(action->>'type') = ANY($${nextIndex}::text[])
+    )`);
+    values.push(filters.action_types.map((actionType) => actionType.toLowerCase()));
+    nextIndex++;
+  }
+
+  return {
+    whereClause: conditions.join(' AND '),
+    values,
+  };
+}
+
+async function runSemanticSearch(query, limit = 10, filters = null) {
+  if (!query) {
+    throw new Error('Missing required parameter: query');
+  }
+
+  const embeddingString = await createQueryEmbedding(query);
+  const values = [embeddingString, limit];
+  let whereClause = 'embedding IS NOT NULL';
+
+  if (filters) {
+    const filterQuery = buildMetadataFilterClause(filters, 3);
+    whereClause = filterQuery.whereClause;
+    values.push(...filterQuery.values);
+  }
+
+  const result = await pool.query(
+    `SELECT id, content, metadata, created_at,
+            1 - (embedding <=> $1::vector) AS similarity
+     FROM thoughts
+     WHERE ${whereClause}
+     ORDER BY embedding <=> $1::vector
+     LIMIT $2`,
+    values
+  );
+
+  return result.rows;
+}
+
+async function getMetadataStats() {
+  const statsResult = await pool.query(`
+    SELECT
+      COUNT(*)::int AS total_thoughts,
+      COUNT(*) FILTER (WHERE metadata ? 'extracted')::int AS thoughts_with_metadata,
+      COALESCE(SUM(jsonb_array_length(COALESCE(metadata->'extracted'->'people', '[]'::jsonb))), 0)::int AS total_people,
+      COALESCE(SUM(jsonb_array_length(COALESCE(metadata->'extracted'->'topics', '[]'::jsonb))), 0)::int AS total_topics,
+      COALESCE(SUM(jsonb_array_length(COALESCE(metadata->'extracted'->'action_items', '[]'::jsonb))), 0)::int AS total_actions
+    FROM thoughts
+  `);
+
+  const peopleResult = await pool.query(`
+    SELECT DISTINCT person->>'name' AS person
+    FROM thoughts
+    CROSS JOIN LATERAL jsonb_array_elements(COALESCE(metadata->'extracted'->'people', '[]'::jsonb)) AS person
+    WHERE person->>'name' IS NOT NULL AND person->>'name' <> ''
+    ORDER BY person
+    LIMIT 20
+  `);
+
+  const topicsResult = await pool.query(`
+    SELECT DISTINCT topic->>'name' AS topic
+    FROM thoughts
+    CROSS JOIN LATERAL jsonb_array_elements(COALESCE(metadata->'extracted'->'topics', '[]'::jsonb)) AS topic
+    WHERE topic->>'name' IS NOT NULL AND topic->>'name' <> ''
+    ORDER BY topic
+    LIMIT 20
+  `);
+
+  const actionTypesResult = await pool.query(`
+    SELECT action->>'type' AS action_type, COUNT(*)::int AS count
+    FROM thoughts
+    CROSS JOIN LATERAL jsonb_array_elements(COALESCE(metadata->'extracted'->'action_items', '[]'::jsonb)) AS action
+    WHERE action->>'type' IS NOT NULL AND action->>'type' <> ''
+    GROUP BY action->>'type'
+    ORDER BY count DESC, action_type ASC
+  `);
+
+  return {
+    stats: statsResult.rows[0],
+    unique_people: peopleResult.rows.map((row) => row.person),
+    unique_topics: topicsResult.rows.map((row) => row.topic),
+    action_types: actionTypesResult.rows,
+  };
+}
 
 // Health check
 app.get('/health', (req, res) => {
@@ -160,41 +336,33 @@ app.post('/mcp', async (req, res) => {
       switch (name) {
         case 'semantic_search': {
           const { query, limit = 10 } = args || {};
-
-          if (!query) {
-            throw new Error('Missing required parameter: query');
-          }
-
-          if (!openai) {
-            throw new Error('OPENAI_API_KEY is required for semantic search');
-          }
-
-          const embeddingResponse = await openai.embeddings.create({
-            model: 'text-embedding-3-large',
-            input: query,
-            dimensions: 3072,
-          });
-
-          const queryEmbedding = embeddingResponse.data[0].embedding;
-          const embeddingString = `[${queryEmbedding.join(',')}]`;
-
-          const dbResult = await pool.query(
-            `SELECT id, content, metadata, created_at,
-                    1 - (embedding <=> $1::vector) as similarity
-             FROM thoughts
-             WHERE embedding IS NOT NULL
-             ORDER BY embedding <=> $1::vector
-             LIMIT $2`,
-            [embeddingString, limit]
-          );
+          const thoughts = await runSemanticSearch(query, limit);
 
           result = {
             content: [{
               type: 'text',
               text: JSON.stringify({
                 query,
-                thoughts: dbResult.rows,
-                count: dbResult.rows.length,
+                thoughts,
+                count: thoughts.length,
+              }, null, 2),
+            }],
+          };
+          break;
+        }
+
+        case 'semantic_search_filtered': {
+          const { query, limit = 10, filters = {} } = args || {};
+          const thoughts = await runSemanticSearch(query, limit, filters);
+
+          result = {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                query,
+                filters,
+                thoughts,
+                count: thoughts.length,
               }, null, 2),
             }],
           };
@@ -231,9 +399,21 @@ app.post('/mcp', async (req, res) => {
             content: [{
               type: 'text',
               text: JSON.stringify({
-                total_thoughts: parseInt(countResult.rows[0].count),
+                total_thoughts: parseInt(countResult.rows[0].count, 10),
                 latest_thought_at: latestResult.rows[0]?.created_at || null,
               }, null, 2),
+            }],
+          };
+          break;
+        }
+
+        case 'get_metadata_stats': {
+          const metadataStats = await getMetadataStats();
+
+          result = {
+            content: [{
+              type: 'text',
+              text: JSON.stringify(metadataStats, null, 2),
             }],
           };
           break;

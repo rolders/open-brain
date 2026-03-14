@@ -2,7 +2,6 @@ const Fastify = require('fastify');
 const pg = require('pg');
 const OpenAI = require('openai');
 const axios = require('axios');
-const fs = require('fs').promises;
 const path = require('path');
 const pdf = require('pdf-parse');
 const mammoth = require('mammoth');
@@ -52,6 +51,30 @@ const openai = new OpenAI({
   apiKey: OPENAI_API_KEY,
 });
 
+// Metadata schema for intelligent extraction
+const METADATA_SCHEMA = {
+  people: [{
+    name: "string",
+    role: "string (optional)",
+    organization: "string (optional)",
+    email: "string (optional)",
+    confidence: "number (0-1)"
+  }],
+  topics: [{
+    name: "string",
+    category: "string (optional)",
+    confidence: "number (0-1)"
+  }],
+  action_items: [{
+    type: "enum: task|decision|commitment|question",
+    description: "string",
+    assignee: "string (optional)",
+    deadline: "string (optional)",
+    status: "enum: pending|completed|cancelled (optional)",
+    confidence: "number (0-1)"
+  }]
+};
+
 // Security middleware: Validate X-OpenBrain-Key
 async function validateApiKey(request, reply) {
   const providedKey = request.headers['x-openbrain-key'];
@@ -75,6 +98,59 @@ async function fileToBuffer(file) {
     file.on('end', () => resolve(Buffer.concat(chunks)));
     file.on('error', reject);
   });
+}
+
+// Helper: Extract intelligent metadata from content using GPT-4o
+async function extractMetadata(content, existingMetadata = {}) {
+  // Skip extraction if content is too short (< 50 chars)
+  if (content.length < 50) {
+    return existingMetadata;
+  }
+
+  try {
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o",
+      messages: [{
+        role: "system",
+        content: `You are a metadata extraction assistant. Extract structured information from text and return ONLY valid JSON.
+
+Extract:
+1. People - names, roles, organizations mentioned
+2. Topics - categories, themes, subject matter
+3. Action Items - tasks, decisions, commitments, questions
+
+For each extracted item, assign a confidence score (0-1) indicating how certain you are.
+
+Return JSON matching this schema:
+${JSON.stringify(METADATA_SCHEMA, null, 2)}
+
+If no items of a type are found, return an empty array for that type. Be conservative with confidence scores - only extract what is clearly stated in the text.`
+      }, {
+        role: "user",
+        content: `Extract metadata from this text:\n\n${content.substring(0, 4000)}\n\nReturn JSON following the specified schema.`
+      }],
+      response_format: { type: "json_object" },
+      temperature: 0.1
+    });
+
+    const extracted = JSON.parse(response.choices[0].message.content);
+
+    // Merge with existing metadata
+    return {
+      ...existingMetadata,
+      extracted: {
+        people: extracted.people || [],
+        topics: extracted.topics || [],
+        action_items: extracted.action_items || []
+      },
+      extracted_at: new Date().toISOString(),
+      extraction_model: "gpt-4o"
+    };
+  } catch (error) {
+    fastify.log.error('Metadata extraction failed:', error.message);
+    // Return original metadata on failure
+    return existingMetadata;
+  }
 }
 
 // Helper: Extract text from file based on type
@@ -204,6 +280,15 @@ fastify.post('/capture', {
   const { content, metadata = {} } = request.body;
 
   try {
+    // Extract intelligent metadata using GPT-4o
+    const enhancedMetadata = await extractMetadata(content, metadata);
+
+    fastify.log.info('Extracting metadata...');
+    if (enhancedMetadata.extracted) {
+      const { people, topics, action_items } = enhancedMetadata.extracted;
+      fastify.log.info(`Extracted ${people.length} people, ${topics.length} topics, ${action_items.length} action items`);
+    }
+
     // Generate embedding using OpenAI text-embedding-3-large (3072 dimensions)
     const embeddingResponse = await openai.embeddings.create({
       model: 'text-embedding-3-large',
@@ -216,7 +301,7 @@ fastify.post('/capture', {
     // Insert into database using brain_writer role
     const result = await pool.query(
       'INSERT INTO thoughts (content, metadata, embedding) VALUES ($1, $2, $3::vector) RETURNING id, created_at',
-      [content, JSON.stringify(metadata), `[${embedding.join(',')}]`]
+      [content, JSON.stringify(enhancedMetadata), `[${embedding.join(',')}]`]
     );
 
     const { id, created_at } = result.rows[0];
@@ -226,7 +311,7 @@ fastify.post('/capture', {
       data: {
         id,
         content,
-        metadata,
+        metadata: enhancedMetadata,
         created_at
       }
     };
@@ -288,6 +373,14 @@ fastify.post('/upload', {
       mimetype: mimetype
     };
 
+    // Extract intelligent metadata using GPT-4o
+    const enhancedMetadata = await extractMetadata(content, metadata);
+
+    if (enhancedMetadata.extracted) {
+      const { people, topics, action_items } = enhancedMetadata.extracted;
+      fastify.log.info(`Extracted ${people.length} people, ${topics.length} topics, ${action_items.length} action items from file`);
+    }
+
     // Generate embedding using OpenAI
     const embeddingResponse = await openai.embeddings.create({
       model: 'text-embedding-3-large',
@@ -302,7 +395,7 @@ fastify.post('/upload', {
       'INSERT INTO thoughts (content, metadata, embedding, original_filename, file_type, file_size) VALUES ($1, $2, $3::vector, $4, $5, $6) RETURNING id, created_at',
       [
         content,
-        JSON.stringify(metadata),
+        JSON.stringify(enhancedMetadata),
         `[${embedding.join(',')}]`,
         filename,
         path.extname(filename).toLowerCase(),
@@ -320,7 +413,7 @@ fastify.post('/upload', {
         id,
         content: content.substring(0, 500) + (content.length > 500 ? '...' : ''), // Preview only
         full_content_length: content.length,
-        metadata,
+        metadata: enhancedMetadata,
         original_filename: filename,
         file_type: path.extname(filename).toLowerCase(),
         file_size: fileSize,
