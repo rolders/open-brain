@@ -212,7 +212,7 @@ bot.onText(/\/search (.+)/, async (msg, match) => {
       return;
     }
 
-    let searchResults = `🔍 *Search Results:* "${query}"\n\n`;
+    let searchResults = `🔍 Search Results: "${query}"\n\n`;
 
     result.thoughts.forEach((thought, index) => {
       const similarity = Math.round(thought.similarity * 100);
@@ -230,10 +230,10 @@ bot.onText(/\/search (.+)/, async (msg, match) => {
         fileInfo = `\n   📄 ${thought.metadata.filename}`;
       }
 
-      searchResults += `${index + 1}. *${similarity}%*${fileInfo}\n${formattedPreview}${hasMore ? '\n...' : ''}\n\n`;
+      searchResults += `${index + 1}. [${similarity}%]${fileInfo}\n${formattedPreview}${hasMore ? '\n...' : ''}\n\n`;
     });
 
-    bot.sendMessage(chatId, searchResults, { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, searchResults);
   } catch (error) {
     console.error('Error searching thoughts:', error.response?.data || error.message);
     bot.sendMessage(chatId, `❌ Failed to search: ${error.response?.data?.error || error.message}`);
@@ -271,7 +271,7 @@ bot.onText(/\/recent(?: (\d+))?/, async (msg, match) => {
       return;
     }
 
-    let recentMessage = `📝 *Recent ${result.thoughts.length} Thoughts*\n\n`;
+    let recentMessage = `📝 Recent ${result.thoughts.length} Thoughts\n\n`;
 
     result.thoughts.forEach((thought, index) => {
       const date = new Date(thought.created_at).toLocaleDateString();
@@ -295,7 +295,7 @@ bot.onText(/\/recent(?: (\d+))?/, async (msg, match) => {
       recentMessage += `${index + 1}. ${formattedPreview}${hasMore ? '...' : ''}\n   📅 ${date}${fileInfo}\n\n`;
     });
 
-    bot.sendMessage(chatId, recentMessage, { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, recentMessage);
   } catch (error) {
     console.error('Error fetching recent thoughts:', error.response?.data || error.message);
     bot.sendMessage(chatId, `❌ Failed to fetch recent thoughts: ${error.response?.data?.error || error.message}`);
