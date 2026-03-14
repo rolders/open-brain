@@ -46,12 +46,11 @@ function cleanText(text) {
     .trim();
 }
 
-// Helper function to escape markdown special characters
-// Must be called AFTER cleanText to avoid double-escaping
-function escapeMarkdown(text) {
+// Helper function to escape basic markdown characters for messages with markdown formatting
+function escapeBasicMarkdown(text) {
   if (!text) return '';
-  // Only escape the main markdown special characters
-  return text.replace(/[*_\[\]()~`>#+=|{}.!\\-]/g, '\\$&');
+  // Only escape the most common markdown characters that break formatting
+  return text.replace(/[*_()\[\]]/g, '\\$&');
 }
 
 // Helper function to format file size
@@ -220,7 +219,7 @@ bot.onText(/\/search (.+)/, async (msg, match) => {
       searchResults += `${index + 1}. *${similarity}% match*${fileInfo}\n${truncatedPreview}\n\n`;
     });
 
-    bot.sendMessage(chatId, searchResults, { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, searchResults);
   } catch (error) {
     console.error('Error searching thoughts:', error.response?.data || error.message);
     bot.sendMessage(chatId, `❌ Failed to search: ${error.response?.data?.error || error.message}`);
@@ -279,7 +278,7 @@ bot.onText(/\/recent(?: (\d+))?/, async (msg, match) => {
       recentMessage += `${index + 1}. ${truncatedPreview}\n   📅 ${date}${fileInfo}\n\n`;
     });
 
-    bot.sendMessage(chatId, recentMessage, { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, recentMessage);
   } catch (error) {
     console.error('Error fetching recent thoughts:', error.response?.data || error.message);
     bot.sendMessage(chatId, `❌ Failed to fetch recent thoughts: ${error.response?.data?.error || error.message}`);
@@ -372,7 +371,7 @@ bot.on('document', async (msg) => {
 📝 *Content Length:* ${result.full_content_length} characters
 🆔 *Thought ID:* ${result.id}
 
-Preview: ${cleanText(result.content).substring(0, 200)}${result.content.length > 200 ? '...' : ''}
+Preview: ${escapeBasicMarkdown(cleanText(result.content).substring(0, 200))}${result.content.length > 200 ? '...' : ''}
     `.trim();
 
     bot.sendMessage(chatId, successMessage, { parse_mode: 'Markdown' });
@@ -433,7 +432,7 @@ bot.on('photo', async (msg) => {
 📝 *Extracted Text:* ${result.full_content_length} characters
 🆔 *Thought ID:* ${result.id}
 
-Preview: ${cleanText(result.content).substring(0, 200)}${result.content.length > 200 ? '...' : ''}
+Preview: ${escapeBasicMarkdown(cleanText(result.content).substring(0, 200))}${result.content.length > 200 ? '...' : ''}
     `.trim();
 
     bot.sendMessage(chatId, successMessage, { parse_mode: 'Markdown' });
