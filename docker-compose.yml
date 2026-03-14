@@ -1,6 +1,6 @@
 services:
   db:
-    image: ankane/pgvector:latest
+    image: ankane/pgvector:0.7.0
     container_name: openbrain-db
     environment:
       POSTGRES_USER: postgres
@@ -61,7 +61,7 @@ services:
     tty: true
 
   caddy:
-    image: caddy:latest
+    image: caddy:2.7.6
     container_name: openbrain-caddy
     ports:
       - "8888:8080"

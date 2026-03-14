@@ -21,6 +21,21 @@ Optional services:
 - `mcp-server-http`: HTTP MCP endpoint on `http://127.0.0.1:3000/mcp`
 - `telegram-bot`: Telegram capture/search bot
 
+## Image version policy
+
+Core runtime images are pinned for reproducibility:
+- `ankane/pgvector:0.7.0`
+- `caddy:2.7.6`
+
+Do not use floating tags (for example `:latest`) in committed compose files.
+
+### Upgrading pinned versions
+
+1. Update image tags in `docker-compose.yml`
+2. Validate config: `docker compose config --quiet`
+3. Run preflight and tests: `./validate.sh && ./test.sh`
+4. Commit image version and doc updates together
+
 ## Prerequisites
 
 - Docker 24+

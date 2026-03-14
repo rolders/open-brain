@@ -164,6 +164,12 @@ else
     fail "HTTP MCP is not bound to localhost only"
 fi
 
+if grep -Eq 'ankane/pgvector:latest|caddy:latest' docker-compose.yml; then
+    fail "floating core image tags are not allowed (pin exact versions)"
+else
+    pass "core images are pinned to exact versions"
+fi
+
 echo
 
 echo "Validating JavaScript syntax..."
