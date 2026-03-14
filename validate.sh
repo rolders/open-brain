@@ -2,7 +2,7 @@
 # Open Brain Validation Script
 # Validates the setup before starting Docker
 
-set -e
+set -euo pipefail
 
 echo "🔍 Open Brain Pre-Flight Validation"
 echo "===================================="
@@ -18,7 +18,7 @@ ERRORS=0
 
 # Check 1: Required files exist
 echo "Checking required files..."
-FILES=(".env" "init.sql" "docker-compose.yml" "Caddyfile" "capture-api/index.js" "mcp-server/index.js")
+FILES=(".env" "init.sql" "docker-compose.yml" "Caddyfile" "capture-api/index.js" "mcp-server/index.js" "mcp-server/http-server.js" "test.sh")
 for file in "${FILES[@]}"; do
     if [ -f "$file" ]; then
         echo -e "  ${GREEN}✓${NC} $file"
@@ -53,13 +53,20 @@ else
 fi
 echo ""
 
-# Check 3: init.sql passwords match .env
+# Check 3: init.sql password sync
 echo "Checking init.sql password sync..."
-if grep -q "REPLACE_WITH_DB_PASSWORD_FROM_ENV" init.sql; then
-    echo -e "  ${RED}✗${NC}  init.sql still has placeholder (run ./setup.sh)"
+DB_PASSWORD_VALUE=$(grep '^DB_PASSWORD=' .env | cut -d= -f2- || true)
+WRITER_PASSWORD=$(grep "CREATE USER brain_writer" init.sql | sed -n "s/.*PASSWORD '\([^']*\)'.*/\1/p")
+READER_PASSWORD=$(grep "CREATE USER brain_reader" init.sql | sed -n "s/.*PASSWORD '\([^']*\)'.*/\1/p")
+
+if [ -z "$DB_PASSWORD_VALUE" ] || [ -z "$WRITER_PASSWORD" ] || [ -z "$READER_PASSWORD" ]; then
+    echo -e "  ${RED}✗${NC}  Unable to verify DB_PASSWORD against init.sql"
+    ERRORS=$((ERRORS + 1))
+elif [ "$DB_PASSWORD_VALUE" != "$WRITER_PASSWORD" ] || [ "$DB_PASSWORD_VALUE" != "$READER_PASSWORD" ]; then
+    echo -e "  ${RED}✗${NC}  init.sql role passwords do not match .env DB_PASSWORD"
     ERRORS=$((ERRORS + 1))
 else
-    echo -e "  ${GREEN}✓${NC}  init.sql passwords configured"
+    echo -e "  ${GREEN}✓${NC}  init.sql passwords match .env DB_PASSWORD"
 fi
 echo ""
 
@@ -76,6 +83,13 @@ if node --check mcp-server/index.js 2>/dev/null; then
     echo -e "  ${GREEN}✓${NC}  mcp-server/index.js valid"
 else
     echo -e "  ${RED}✗${NC}  mcp-server/index.js has syntax errors"
+    ERRORS=$((ERRORS + 1))
+fi
+
+if node --check mcp-server/http-server.js 2>/dev/null; then
+    echo -e "  ${GREEN}✓${NC}  mcp-server/http-server.js valid"
+else
+    echo -e "  ${RED}✗${NC}  mcp-server/http-server.js has syntax errors"
     ERRORS=$((ERRORS + 1))
 fi
 echo ""
@@ -99,12 +113,22 @@ else
     ERRORS=$((ERRORS + 1))
 fi
 
-if command -v docker-compose &> /dev/null; then
-    echo -e "  ${GREEN}✓${NC}  docker-compose found"
-elif docker compose version &> /dev/null; then
+if docker compose version &> /dev/null; then
     echo -e "  ${GREEN}✓${NC}  docker compose (plugin) found"
+elif command -v docker-compose &> /dev/null; then
+    echo -e "  ${GREEN}✓${NC}  docker-compose found"
 else
-    echo -e "  ${RED}✗${NC}  docker-compose not found"
+    echo -e "  ${RED}✗${NC}  docker compose / docker-compose not found"
+    ERRORS=$((ERRORS + 1))
+fi
+echo ""
+
+# Check 7: test script port expectations
+echo "Checking test script targets current ports..."
+if grep -q 'localhost:8888' test.sh && grep -q 'localhost:3000' test.sh; then
+    echo -e "  ${GREEN}✓${NC}  test.sh targets Capture API on 8888 and MCP HTTP on 3000"
+else
+    echo -e "  ${RED}✗${NC}  test.sh does not target expected ports"
     ERRORS=$((ERRORS + 1))
 fi
 echo ""
@@ -115,7 +139,7 @@ if [ $ERRORS -eq 0 ]; then
     echo -e "${GREEN}✅ All validations passed!${NC}"
     echo ""
     echo "Ready to start:"
-    echo "  docker compose up -d"
+    echo "  docker compose up -d db capture-api mcp-server caddy"
     echo ""
     echo "Then run tests:"
     echo "  ./test.sh"
