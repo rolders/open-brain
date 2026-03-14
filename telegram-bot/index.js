@@ -32,8 +32,23 @@ const api = axios.create({
 });
 
 // Helper function to escape markdown special characters
+// Only escapes characters that would break markdown parsing
 function escapeMarkdown(text) {
-  return text.replace(/[_*[\]()~`>#+=|{}.!\\-]/g, '\\$&');
+  if (!text) return '';
+  // Remove existing backslashes first to avoid double-escaping
+  let cleaned = text.replace(/\\_/g, '_').replace(/\\*/g, '*').replace(/\\[/g, '[').replace(/\\]/g, ']');
+  // Then escape only the characters that would break markdown
+  return cleaned.replace(/[*_\[\]()~`>#+=|{}.!\\-]/g, '\\$&');
+}
+
+// Helper function to clean text for display (removes HTML entities)
+function cleanText(text) {
+  if (!text) return '';
+  return text
+    .replace(/\\n/g, ' ')  // Replace literal \n with space
+    .replace(/\\t/g, ' ')  // Replace literal \t with space
+    .replace(/\s+/g, ' ')  // Replace multiple whitespace with single space
+    .trim();
 }
 
 // Helper function to format file size
@@ -190,8 +205,16 @@ bot.onText(/\/search (.+)/, async (msg, match) => {
 
     result.thoughts.forEach((thought, index) => {
       const similarity = Math.round(thought.similarity * 100);
-      const preview = thought.content.substring(0, 80);
-      searchResults += `${index + 1}. *${similarity}% match*\n${escapeMarkdown(preview)}${thought.content.length > 80 ? '...' : ''}\n\n`;
+      const preview = cleanText(thought.content);
+      const truncatedPreview = preview.substring(0, 150) + (preview.length > 150 ? '...' : '');
+
+      // Add file info if available
+      let fileInfo = '';
+      if (thought.metadata && thought.metadata.filename) {
+        fileInfo = `\n   📄 ${thought.metadata.filename}`;
+      }
+
+      searchResults += `${index + 1}. *${similarity}% match*${fileInfo}\n${escapeMarkdown(truncatedPreview)}\n\n`;
     });
 
     bot.sendMessage(chatId, searchResults, { parse_mode: 'Markdown' });
@@ -236,8 +259,21 @@ bot.onText(/\/recent(?: (\d+))?/, async (msg, match) => {
 
     result.thoughts.forEach((thought, index) => {
       const date = new Date(thought.created_at).toLocaleDateString();
-      const preview = thought.content.substring(0, 60);
-      recentMessage += `${index + 1}. ${escapeMarkdown(preview)}${thought.content.length > 60 ? '...' : ''}\n   📅 ${date}\n\n`;
+      const preview = cleanText(thought.content);
+      const truncatedPreview = preview.substring(0, 80) + (preview.length > 80 ? '...' : '');
+
+      // Add file info if available
+      let fileInfo = '';
+      if (thought.metadata) {
+        if (thought.metadata.filename) {
+          fileInfo = ` 📄 ${thought.metadata.filename}`;
+        }
+        if (thought.metadata.source === 'file_upload') {
+          fileInfo = ` 📎 ${thought.metadata.filename || 'File'}`;
+        }
+      }
+
+      recentMessage += `${index + 1}. ${escapeMarkdown(truncatedPreview)}\n   📅 ${date}${fileInfo}\n\n`;
     });
 
     bot.sendMessage(chatId, recentMessage, { parse_mode: 'Markdown' });
