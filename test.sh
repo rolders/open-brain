@@ -192,9 +192,22 @@ else
   exit 1
 fi
 
-echo -n "Test 6: File upload enqueues job and worker completes it... "
+echo -n "Test 6: File upload enqueues job and worker completes chunked ingestion... "
 UPLOAD_FIXTURE=$(mktemp /tmp/openbrain-upload-XXXXXX.txt)
-printf '%s\n' 'Meeting notes: Priya decided the release topic is container security. Marcus will prepare the deployment checklist and follow up tomorrow.' > "$UPLOAD_FIXTURE"
+python3 - "$UPLOAD_FIXTURE" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+paragraph = (
+    "# Project Notes\n"
+    "Priya decided the release topic is container security. "
+    "Marcus will prepare the deployment checklist and follow up tomorrow. "
+    "The team agreed to track risks, owners, and deadlines per section.\n\n"
+)
+content = paragraph * 40
+path.write_text(content)
+PY
 
 UPLOAD_RESULT=$(curl -fsS -X POST "$API_BASE_URL/upload" \
   -H "X-OpenBrain-Key: $OPENBRAIN_API_KEY" \
@@ -227,7 +240,8 @@ for _ in $(seq 1 40); do
   sleep 2
 done
 
-if [ "$JOB_STATUS" = "completed" ] && echo "$JOB_RESULT" | grep -q '"thought_id"'; then
+JOB_CHUNK_COUNT=$(echo "$JOB_RESULT" | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["result"].get("chunk_count",0))' 2>/dev/null || echo 0)
+if [ "$JOB_STATUS" = "completed" ] && echo "$JOB_RESULT" | grep -q '"thought_id"' && [ "$JOB_CHUNK_COUNT" -gt 1 ]; then
   echo -e "${GREEN}PASS${NC}"
 else
   echo -e "${RED}FAIL${NC}"

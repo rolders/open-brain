@@ -9,6 +9,10 @@ CREATE TABLE thoughts (
     source_uri TEXT,
     source_hash TEXT,
     content_hash TEXT,
+    parent_document_id BIGINT,
+    chunk_index INTEGER,
+    token_count INTEGER,
+    heading_path TEXT,
     captured_via TEXT,
     captured_by TEXT,
     content TEXT NOT NULL,
@@ -25,6 +29,7 @@ CREATE INDEX idx_thoughts_metadata ON thoughts USING GIN (metadata);
 CREATE INDEX idx_thoughts_workspace_created_at ON thoughts (workspace_id, created_at DESC);
 CREATE INDEX idx_thoughts_workspace_source_hash ON thoughts (workspace_id, source_hash);
 CREATE INDEX idx_thoughts_workspace_content_hash ON thoughts (workspace_id, content_hash);
+CREATE INDEX idx_thoughts_parent_document_id ON thoughts (parent_document_id, chunk_index);
 
 CREATE TABLE ingestion_jobs (
     id BIGSERIAL PRIMARY KEY,
@@ -48,7 +53,7 @@ CREATE INDEX idx_ingestion_jobs_workspace_created_at ON ingestion_jobs (workspac
 CREATE USER brain_writer WITH PASSWORD '__BRAIN_WRITER_PASSWORD__';
 CREATE USER brain_reader WITH PASSWORD '__BRAIN_READER_PASSWORD__';
 
-GRANT INSERT, SELECT ON thoughts TO brain_writer;
+GRANT INSERT, SELECT, UPDATE ON thoughts TO brain_writer;
 GRANT USAGE, SELECT ON SEQUENCE thoughts_id_seq TO brain_writer;
 GRANT INSERT, SELECT, UPDATE ON ingestion_jobs TO brain_writer;
 GRANT USAGE, SELECT ON SEQUENCE ingestion_jobs_id_seq TO brain_writer;

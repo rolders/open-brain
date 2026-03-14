@@ -38,6 +38,18 @@ Each captured item now computes:
 
 For the same `workspace_id`, repeated capture of the same normalized content returns the existing row with `deduplicated: true`.
 
+## Async ingestion + chunking
+
+File uploads are asynchronous (`upload -> job -> worker`).
+
+The ingestion worker stores document chunks with:
+- `parent_document_id`
+- `chunk_index`
+- `token_count`
+- `heading_path`
+
+This improves large-document retrieval by searching semantically meaningful chunks instead of monolithic full-file entries.
+
 ## Image version policy
 
 Core runtime images are pinned for reproducibility:

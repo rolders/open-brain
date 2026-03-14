@@ -5,6 +5,7 @@ const path = require('path');
 const pdf = require('pdf-parse');
 const mammoth = require('mammoth');
 const { buildHashes } = require('./hashing');
+const { chunkDocument } = require('./chunking');
 
 const DEFAULT_NAMESPACE = 'default';
 const POLL_INTERVAL_MS = 2000;
@@ -235,6 +236,11 @@ async function saveThoughtWithDedupe({
   fileType,
   fileSize,
   sourceContext,
+  parentDocumentId = null,
+  chunkIndex = null,
+  tokenCount = null,
+  headingPath = null,
+  dedupeByContent = true,
 }) {
   const hashes = buildHashes({
     content,
@@ -245,29 +251,31 @@ async function saveThoughtWithDedupe({
     sourceContext,
   });
 
-  const existing = await pool.query(
-    `SELECT id, created_at, tenant_id, workspace_id
-     FROM thoughts
-     WHERE workspace_id = $1 AND content_hash = $2
-     ORDER BY id ASC
-     LIMIT 1`,
-    [scope.workspace_id, hashes.contentHash],
-  );
+  if (dedupeByContent) {
+    const existing = await pool.query(
+      `SELECT id, created_at, tenant_id, workspace_id
+       FROM thoughts
+       WHERE workspace_id = $1 AND content_hash = $2
+       ORDER BY id ASC
+       LIMIT 1`,
+      [scope.workspace_id, hashes.contentHash],
+    );
 
-  if (existing.rows.length > 0) {
-    const row = existing.rows[0];
-    return {
-      ...row,
-      content_hash: hashes.contentHash,
-      source_hash: hashes.sourceHash,
-      deduplicated: true,
-    };
+    if (existing.rows.length > 0) {
+      const row = existing.rows[0];
+      return {
+        ...row,
+        content_hash: hashes.contentHash,
+        source_hash: hashes.sourceHash,
+        deduplicated: true,
+      };
+    }
   }
 
   const inserted = await pool.query(
     `INSERT INTO thoughts
-      (tenant_id, workspace_id, agent_id, source_type, source_uri, source_hash, content_hash, captured_via, captured_by, content, metadata, embedding, original_filename, file_type, file_size)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::vector, $13, $14, $15)
+      (tenant_id, workspace_id, agent_id, source_type, source_uri, source_hash, content_hash, parent_document_id, chunk_index, token_count, heading_path, captured_via, captured_by, content, metadata, embedding, original_filename, file_type, file_size)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::vector, $17, $18, $19)
      RETURNING id, created_at, tenant_id, workspace_id`,
     [
       scope.tenant_id,
@@ -277,6 +285,10 @@ async function saveThoughtWithDedupe({
       scope.source_uri,
       hashes.sourceHash,
       hashes.contentHash,
+      parentDocumentId,
+      chunkIndex,
+      tokenCount,
+      headingPath,
       scope.captured_via,
       scope.captured_by,
       content,
@@ -368,41 +380,116 @@ async function processJob(job) {
   const metadata = buildUploadMetadata(filename, mimetype, fileSize, rawMetadata);
   const enhancedMetadata = await extractMetadata(content, metadata);
 
-  const embeddingResponse = await openai.embeddings.create({
-    model: 'text-embedding-3-large',
-    input: content,
-    dimensions: 3072,
-  });
-
-  const embedding = embeddingResponse.data[0].embedding;
-
   const scope = deriveScopeAndProvenance(enhancedMetadata, {
     source_type: 'file_upload',
     captured_via: 'ingestion-worker',
   });
 
-  const saved = await saveThoughtWithDedupe({
-    scope,
+  const documentHashes = buildHashes({
     content,
-    metadata: enhancedMetadata,
-    embedding,
-    originalFilename: filename,
-    fileType: path.extname(filename).toLowerCase(),
-    fileSize,
+    workspaceId: scope.workspace_id,
+    sourceType: scope.source_type || 'file_upload',
+    sourceUri: scope.source_uri || '',
+    sourceHash: scope.source_hash,
     sourceContext: `${filename}:${fileSize}`,
   });
 
+  const scopedWithSource = {
+    ...scope,
+    source_hash: documentHashes.sourceHash,
+  };
+
+  const existingDoc = await pool.query(
+    `SELECT id, tenant_id, workspace_id
+     FROM thoughts
+     WHERE workspace_id = $1 AND source_hash = $2 AND chunk_index = 0
+     ORDER BY id ASC
+     LIMIT 1`,
+    [scopedWithSource.workspace_id, scopedWithSource.source_hash],
+  );
+
+  if (existingDoc.rows.length > 0) {
+    const root = existingDoc.rows[0];
+    const countResult = await pool.query(
+      `SELECT COUNT(*)::int AS count
+       FROM thoughts
+       WHERE workspace_id = $1 AND source_hash = $2`,
+      [scopedWithSource.workspace_id, scopedWithSource.source_hash],
+    );
+
+    return {
+      thought_id: root.id,
+      tenant_id: root.tenant_id,
+      workspace_id: root.workspace_id,
+      deduplicated: true,
+      content_hash: null,
+      source_hash: scopedWithSource.source_hash,
+      original_filename: filename,
+      file_type: path.extname(filename).toLowerCase(),
+      file_size: fileSize,
+      full_content_length: content.length,
+      chunk_count: countResult.rows[0].count,
+    };
+  }
+
+  const chunks = chunkDocument(content, {
+    maxTokens: 350,
+    overlapTokens: 60,
+  });
+
+  let rootThoughtId = null;
+  let firstChunkResult = null;
+
+  for (const chunk of chunks) {
+    const embeddingResponse = await openai.embeddings.create({
+      model: 'text-embedding-3-large',
+      input: chunk.content,
+      dimensions: 3072,
+    });
+
+    const embedding = embeddingResponse.data[0].embedding;
+
+    const saved = await saveThoughtWithDedupe({
+      scope: scopedWithSource,
+      content: chunk.content,
+      metadata: enhancedMetadata,
+      embedding,
+      originalFilename: filename,
+      fileType: path.extname(filename).toLowerCase(),
+      fileSize,
+      sourceContext: `${filename}:${fileSize}:chunk:${chunk.chunk_index}`,
+      parentDocumentId: rootThoughtId,
+      chunkIndex: chunk.chunk_index,
+      tokenCount: chunk.token_count,
+      headingPath: chunk.heading_path,
+      dedupeByContent: false,
+    });
+
+    if (!rootThoughtId) {
+      rootThoughtId = saved.id;
+      firstChunkResult = saved;
+
+      await pool.query(
+        `UPDATE thoughts
+         SET parent_document_id = $2
+         WHERE id = $1`,
+        [rootThoughtId, rootThoughtId],
+      );
+    }
+  }
+
   return {
-    thought_id: saved.id,
-    tenant_id: saved.tenant_id,
-    workspace_id: saved.workspace_id,
-    deduplicated: saved.deduplicated,
-    content_hash: saved.content_hash,
-    source_hash: saved.source_hash,
+    thought_id: rootThoughtId,
+    tenant_id: firstChunkResult?.tenant_id || scopedWithSource.tenant_id,
+    workspace_id: firstChunkResult?.workspace_id || scopedWithSource.workspace_id,
+    deduplicated: false,
+    content_hash: firstChunkResult?.content_hash || null,
+    source_hash: scopedWithSource.source_hash,
     original_filename: filename,
     file_type: path.extname(filename).toLowerCase(),
     file_size: fileSize,
     full_content_length: content.length,
+    chunk_count: chunks.length,
   };
 }
 

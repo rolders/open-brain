@@ -32,12 +32,12 @@ ZAI_API_KEY=your_actual_zai_api_key_here
 Then restart the relevant services:
 
 ```bash
-docker compose restart capture-api telegram-bot
+docker compose restart capture-api ingestion-worker telegram-bot
 ```
 
 ## Upload API (asynchronous)
 
-`/upload` now enqueues an ingestion job and returns immediately with `job_id`:
+`/upload` now enqueues an ingestion job and returns immediately with `job_id`. The worker parses and stores chunked rows (`parent_document_id`, `chunk_index`, `token_count`, `heading_path`) for better retrieval quality:
 
 ```bash
 curl -X POST http://localhost:8888/upload \

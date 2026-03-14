@@ -9,6 +9,10 @@ ADD COLUMN IF NOT EXISTS source_type TEXT,
 ADD COLUMN IF NOT EXISTS source_uri TEXT,
 ADD COLUMN IF NOT EXISTS source_hash TEXT,
 ADD COLUMN IF NOT EXISTS content_hash TEXT,
+ADD COLUMN IF NOT EXISTS parent_document_id BIGINT,
+ADD COLUMN IF NOT EXISTS chunk_index INTEGER,
+ADD COLUMN IF NOT EXISTS token_count INTEGER,
+ADD COLUMN IF NOT EXISTS heading_path TEXT,
 ADD COLUMN IF NOT EXISTS captured_via TEXT,
 ADD COLUMN IF NOT EXISTS captured_by TEXT,
 ADD COLUMN IF NOT EXISTS original_filename TEXT,
@@ -25,6 +29,10 @@ COMMENT ON COLUMN thoughts.source_type IS 'Capture source type (manual, upload, 
 COMMENT ON COLUMN thoughts.source_uri IS 'Source URI or external reference';
 COMMENT ON COLUMN thoughts.source_hash IS 'Deterministic hash for source provenance';
 COMMENT ON COLUMN thoughts.content_hash IS 'Deterministic hash for normalized content deduplication';
+COMMENT ON COLUMN thoughts.parent_document_id IS 'Root document row id for chunked ingestion';
+COMMENT ON COLUMN thoughts.chunk_index IS 'Chunk ordering within a parent document';
+COMMENT ON COLUMN thoughts.token_count IS 'Approximate token count for this chunk';
+COMMENT ON COLUMN thoughts.heading_path IS 'Heading path context for chunked content';
 COMMENT ON COLUMN thoughts.captured_via IS 'Capture channel (api, upload, bot, ingestion-worker)';
 COMMENT ON COLUMN thoughts.captured_by IS 'User or system actor that initiated capture';
 
@@ -33,6 +41,7 @@ CREATE INDEX IF NOT EXISTS idx_thoughts_created_at ON thoughts (created_at DESC)
 CREATE INDEX IF NOT EXISTS idx_thoughts_workspace_created_at ON thoughts (workspace_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_thoughts_workspace_source_hash ON thoughts (workspace_id, source_hash);
 CREATE INDEX IF NOT EXISTS idx_thoughts_workspace_content_hash ON thoughts (workspace_id, content_hash);
+CREATE INDEX IF NOT EXISTS idx_thoughts_parent_document_id ON thoughts (parent_document_id, chunk_index);
 
 CREATE TABLE IF NOT EXISTS ingestion_jobs (
   id BIGSERIAL PRIMARY KEY,
@@ -49,5 +58,6 @@ CREATE TABLE IF NOT EXISTS ingestion_jobs (
 CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_status_created_at ON ingestion_jobs (status, created_at);
 CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_workspace_created_at ON ingestion_jobs (workspace_id, created_at DESC);
 
+GRANT INSERT, SELECT, UPDATE ON thoughts TO brain_writer;
 GRANT INSERT, SELECT, UPDATE ON ingestion_jobs TO brain_writer;
 GRANT USAGE, SELECT ON SEQUENCE ingestion_jobs_id_seq TO brain_writer;
