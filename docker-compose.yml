@@ -4,10 +4,10 @@ services:
     container_name: openbrain-db
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: openbrain
     volumes:
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./.generated/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
       - pgdata:/var/lib/postgresql/data
     networks:
       - brain_net
@@ -27,7 +27,7 @@ services:
       DB_PORT: 5432
       DB_NAME: openbrain
       DB_USER: brain_writer
-      DB_PASSWORD: ${DB_PASSWORD}
+      DB_PASSWORD: ${BRAIN_WRITER_PASSWORD}
       OPENBRAIN_API_KEY: ${OPENBRAIN_API_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       ZAI_API_KEY: ${ZAI_API_KEY}
@@ -49,7 +49,7 @@ services:
       DB_PORT: 5432
       DB_NAME: openbrain
       DB_USER: brain_reader
-      DB_PASSWORD: ${DB_PASSWORD}
+      DB_PASSWORD: ${BRAIN_READER_PASSWORD}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
     depends_on:
       db:
@@ -82,7 +82,9 @@ services:
     container_name: openbrain-telegram-bot
     environment:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_ALLOWED_CHAT_IDS: ${TELEGRAM_ALLOWED_CHAT_IDS}
       OPENBRAIN_API_KEY: ${OPENBRAIN_API_KEY}
+      MCP_API_KEY: ${MCP_API_KEY}
       CAPTURE_API_URL: http://capture-api:3000
     depends_on:
       - capture-api
@@ -102,11 +104,12 @@ services:
       DB_PORT: 5432
       DB_NAME: openbrain
       DB_USER: brain_reader
-      DB_PASSWORD: ${DB_PASSWORD}
+      DB_PASSWORD: ${BRAIN_READER_PASSWORD}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
+      MCP_API_KEY: ${MCP_API_KEY}
       PORT: 3000
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       db:
         condition: service_healthy

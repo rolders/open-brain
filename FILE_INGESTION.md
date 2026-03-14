@@ -1,197 +1,75 @@
 # File Ingestion Guide
 
-Open Brain now supports file ingestion for automatic text extraction and storage in your memory system.
+Open Brain supports file ingestion for automatic text extraction and storage.
 
-## Supported File Types
+## Supported file types
 
-### Text Files
-- `.txt` - Plain text files
-- `.md` - Markdown files
+### Text
+- `.txt`
+- `.md`
 
-### Document Files
-- `.pdf` - PDF documents
-- `.docx` - Microsoft Word documents
+### Documents
+- `.pdf`
+- `.docx`
 
-### Image Files (OCR)
-- `.jpg` / `.jpeg` - JPEG images
-- `.png` - PNG images
-- `.gif` - GIF images
-- `.bmp` - Bitmap images
-- `.webp` - WebP images
+### Images (OCR)
+- `.jpg` / `.jpeg`
+- `.png`
+- `.gif`
+- `.bmp`
+- `.webp`
 
-## How It Works
+## OCR setup
 
-### Text Files
-Text files are read directly and their content is stored as a thought.
+Image OCR uses the z.ai GLM-OCR API.
 
-### Document Files
-- **PDF files**: Extracted using `pdf-parse` library
-- **Word documents**: Extracted using `mammoth` library
-
-### Image Files (OCR)
-Images are processed using **z.ai GLM-OCR API**, a state-of-the-art OCR model that:
-- Extracts text from images with high accuracy
-- Handles complex layouts, tables, and formulas
-- Recognizes handwriting
-- Works with mixed text-image content
-
-## Setup Requirements
-
-### 1. Get z.ai API Key (for Image OCR)
-
-1. Visit [z.ai](https://z.ai) and sign up for an account
-2. Navigate to API settings
-3. Generate an API key
-4. Add the key to your `.env` file:
+Add to `.env`:
 
 ```bash
 ZAI_API_KEY=your_actual_zai_api_key_here
 ```
 
-### 2. Restart Services
+Then restart the relevant services:
 
 ```bash
 docker compose restart capture-api telegram-bot
 ```
 
-### 3. Verify Setup
+## Upload API
 
-Check that OCR is enabled:
-
-```bash
-docker logs openbrain-capture-api | grep GLM-OCR
-```
-
-You should see:
-- `Z.ai GLM-OCR integration enabled` (if key is set)
-- `Z.ai GLM-OCR integration disabled - ZAI_API_KEY not set` (if key is missing)
-
-## Usage
-
-### Via Telegram Bot
-
-Simply send any supported file to your Telegram bot (@openBrain_xix_bot):
-
-1. **Open Telegram** and search for your bot
-2. **Send a file** - attach any document or image
-3. **Wait for processing** - the bot will confirm when done
-4. **Search your memory** - use `/search` to find extracted content
-
-**Example commands:**
-```
-/send [attach a PDF file]
-/search "content from PDF"
-/recent
-```
-
-### Via API
-
-Use the `/upload` endpoint:
+Use the authenticated `/upload` endpoint:
 
 ```bash
 curl -X POST http://localhost:8888/upload \
-  -H "X-OpenBrain-Key: your_openbrain_api_key" \
-  -F "file=@/path/to/your/file.pdf"
+  -H "X-OpenBrain-Key: $OPENBRAIN_API_KEY" \
+  -F "file=@/path/to/document.pdf"
 ```
 
-**Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "id": 123,
-    "content": "Extracted text content...",
-    "full_content_length": 1234,
-    "metadata": {
-      "source": "file_upload",
-      "filename": "document.pdf",
-      "file_type": ".pdf",
-      "file_size": 123456,
-      "mimetype": "application/pdf"
-    },
-    "original_filename": "document.pdf",
-    "file_type": ".pdf",
-    "file_size": 123456,
-    "created_at": "2024-01-15T10:30:00.000Z"
-  }
-}
-```
+## Telegram uploads
 
-## Database Schema
+The Telegram bot can upload supported files in private-bot mode.
 
-File metadata is stored in the `thoughts` table:
-
-```sql
--- New columns added for file ingestion
-original_filename TEXT  -- Original filename
-file_type TEXT         -- File extension (.pdf, .jpg, etc.)
-file_size BIGINT       -- File size in bytes
-```
-
-## Migration
-
-For existing installations, run the migration script:
+Required config:
 
 ```bash
-docker exec openbrain-db psql -U postgres -d openbrain -f /dev/stdin < migrate.sql
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_ALLOWED_CHAT_IDS=123456789
+MCP_API_KEY=...
 ```
 
-## Limitations
+Behavior:
+- uploads above `10 MB` are rejected before download
+- extracted text above the capture API limit is rejected before embedding
+- user-facing errors are sanitized
 
-- **File size**: Maximum 10MB per file
-- **OCR timeout**: 30 seconds per image
-- **Supported formats**: See [Supported File Types](#supported-file-types) above
+## HTTP MCP search example
 
-## Troubleshooting
+HTTP MCP runs on localhost by default and requires `X-MCP-Key`:
 
-### OCR Not Working
-
-**Problem**: Images are not processed
-
-**Solution**:
-1. Check ZAI_API_KEY is set in `.env`
-2. Verify API key is valid at z.ai
-3. Check capture-api logs: `docker logs openbrain-capture-api`
-
-### File Upload Fails
-
-**Problem**: "Failed to extract text from file"
-
-**Solution**:
-1. Check file is supported format
-2. Verify file is not corrupted
-3. Check file size is under 10MB
-4. Check capture-api logs for details
-
-### Telegram Bot Not Receiving Files
-
-**Problem**: Bot doesn't respond to file uploads
-
-**Solution**:
-1. Check bot is running: `docker ps | grep telegram-bot`
-2. Check bot logs: `docker logs openbrain-telegram-bot`
-3. Verify CAPTURE_API_URL is correct
-4. Restart bot: `docker compose restart telegram-bot`
-
-## Examples
-
-### Capture a PDF via Telegram
-1. Open Telegram
-2. Find @openBrain_xix_bot
-3. Attach a PDF file
-4. Wait for confirmation message
-5. Search content with `/search "your query"`
-
-### Capture an Image via API
 ```bash
-# Upload image for OCR
-curl -X POST http://localhost:8888/upload \
-  -H "X-OpenBrain-Key: your_openbrain_api_key" \
-  -F "file=@screenshot.png"
-
-# Search extracted text
-curl -X POST http://localhost:8888/mcp \
+curl -X POST http://127.0.0.1:3000/mcp \
   -H "Content-Type: application/json" \
+  -H "X-MCP-Key: $MCP_API_KEY" \
   -d '{
     "jsonrpc": "2.0",
     "id": 1,
@@ -203,44 +81,28 @@ curl -X POST http://localhost:8888/mcp \
   }'
 ```
 
-## Security Notes
+## Database note
 
-- All file uploads require valid `OPENBRAIN_API_KEY`
-- Files are processed in memory (not stored permanently)
-- Original files are not saved, only extracted text
-- OCR API calls are made directly to z.ai (files are not stored)
+Tracked SQL no longer contains live role passwords. Run:
 
-## API Endpoints
+```bash
+./setup.sh
+```
 
-### POST /upload
-Upload and process a file.
+before starting the stack so `.generated/init.sql` is rendered with the current secrets.
 
-**Headers:**
-- `X-OpenBrain-Key`: Your API key
-- `Content-Type`: `multipart/form-data`
+## Troubleshooting
 
-**Body:**
-- `file`: The file to process (multipart)
+### OCR not working
+- verify `ZAI_API_KEY` is set
+- inspect `docker compose logs capture-api`
 
-**Response:**
-- JSON with extracted text and metadata
+### Upload fails
+- confirm file type is supported
+- confirm file size is under `10 MB`
+- inspect `docker compose logs capture-api`
 
-### POST /capture (existing)
-Capture text directly (unchanged).
-
-## Features
-
-✅ **Automatic text extraction** from documents
-✅ **OCR for images** using state-of-the-art GLM-OCR
-✅ **Semantic search** over extracted content
-✅ **Telegram integration** for easy file uploads
-✅ **Metadata tracking** (filename, type, size)
-✅ **Error handling** for unsupported formats
-
-## Future Enhancements
-
-Potential additions:
-- Support for more file types (.xlsx, .pptx)
-- Batch file upload
-- File preview in search results
-- Direct file editing and re-processing
+### Telegram file uploads fail
+- inspect `docker compose logs telegram-bot`
+- verify `TELEGRAM_ALLOWED_CHAT_IDS` includes your chat ID
+- verify `mcp-server-http` is up and `MCP_API_KEY` is configured

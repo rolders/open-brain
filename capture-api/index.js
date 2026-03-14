@@ -6,12 +6,17 @@ const path = require('path');
 const pdf = require('pdf-parse');
 const mammoth = require('mammoth');
 
+const MAX_UPLOAD_FILE_BYTES = 10 * 1024 * 1024;
+const MAX_CAPTURE_CONTENT_CHARS = 20000;
+const MAX_EXTRACTED_CONTENT_CHARS = 20000;
+const OCR_LOG_KEY_LIMIT = 10;
+
 const fastify = Fastify({ logger: true });
 
 // Enable multipart form data
 fastify.register(require('@fastify/multipart'), {
   limits: {
-    fileSize: 10 * 1024 * 1024 // 10MB max file size
+    fileSize: MAX_UPLOAD_FILE_BYTES
   }
 });
 
@@ -54,39 +59,161 @@ const openai = new OpenAI({
 // Metadata schema for intelligent extraction
 const METADATA_SCHEMA = {
   people: [{
-    name: "string",
-    role: "string (optional)",
-    organization: "string (optional)",
-    email: "string (optional)",
-    confidence: "number (0-1)"
+    name: 'string',
+    role: 'string (optional)',
+    organization: 'string (optional)',
+    email: 'string (optional)',
+    confidence: 'number (0-1)'
   }],
   topics: [{
-    name: "string",
-    category: "string (optional)",
-    confidence: "number (0-1)"
+    name: 'string',
+    category: 'string (optional)',
+    confidence: 'number (0-1)'
   }],
   action_items: [{
-    type: "enum: task|decision|commitment|question",
-    description: "string",
-    assignee: "string (optional)",
-    deadline: "string (optional)",
-    status: "enum: pending|completed|cancelled (optional)",
-    confidence: "number (0-1)"
+    type: 'enum: task|decision|commitment|question',
+    description: 'string',
+    assignee: 'string (optional)',
+    deadline: 'string (optional)',
+    status: 'enum: pending|completed|cancelled (optional)',
+    confidence: 'number (0-1)'
   }]
 };
+
+function createClientError(statusCode, clientError) {
+  const error = new Error(clientError);
+  error.statusCode = statusCode;
+  error.clientError = clientError;
+  return error;
+}
+
+function sendClientError(reply, error, fallbackStatusCode = 500) {
+  const statusCode = error?.statusCode && error.statusCode >= 400 && error.statusCode < 600
+    ? error.statusCode
+    : fallbackStatusCode;
+  const clientError = error?.clientError || (
+    statusCode === 413
+      ? 'Payload too large'
+      : statusCode >= 400 && statusCode < 500
+        ? 'Request could not be processed'
+        : 'Internal server error'
+  );
+
+  reply.code(statusCode).send({ error: clientError });
+}
+
+function enforceContentLength(content, maxChars, label) {
+  if (typeof content !== 'string') {
+    throw createClientError(400, 'Invalid content');
+  }
+
+  if (content.length > maxChars) {
+    throw createClientError(413, `${label} too large`);
+  }
+}
+
+function parseMultipartMetadata(fields = {}) {
+  const rawMetadata = fields.metadata?.value;
+
+  if (!rawMetadata) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(rawMetadata);
+
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('Metadata must be an object');
+    }
+
+    return parsed;
+  } catch (error) {
+    throw createClientError(400, 'Invalid metadata');
+  }
+}
+
+function buildUploadMetadata(filename, mimetype, fileSize, clientMetadata = {}) {
+  const fileType = path.extname(filename).toLowerCase();
+  const existingFileMetadata = clientMetadata.file && typeof clientMetadata.file === 'object' && !Array.isArray(clientMetadata.file)
+    ? clientMetadata.file
+    : {};
+
+  return {
+    ...clientMetadata,
+    source: clientMetadata.source || 'file_upload',
+    filename,
+    file_type: fileType,
+    file_size: fileSize,
+    mimetype,
+    file: {
+      ...existingFileMetadata,
+      filename,
+      file_type: fileType,
+      file_size: fileSize,
+      mimetype
+    }
+  };
+}
+
+function getObjectKeys(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return [];
+  }
+
+  return Object.keys(value).slice(0, OCR_LOG_KEY_LIMIT);
+}
+
+fastify.setErrorHandler((error, request, reply) => {
+  if (reply.sent) {
+    return;
+  }
+
+  if (error.validation) {
+    fastify.log.warn({
+      method: request.method,
+      url: request.url,
+      validationErrors: error.validation.length
+    }, 'Request validation failed');
+    reply.code(400).send({ error: 'Invalid request' });
+    return;
+  }
+
+  if (error.code === 'FST_REQ_FILE_TOO_LARGE' || error.statusCode === 413) {
+    fastify.log.warn({ method: request.method, url: request.url }, 'Request rejected: payload too large');
+    reply.code(413).send({ error: 'Payload too large' });
+    return;
+  }
+
+  if (error.statusCode && error.statusCode >= 400 && error.statusCode < 500) {
+    fastify.log.warn({
+      err: error,
+      method: request.method,
+      url: request.url
+    }, 'Request rejected');
+    reply.code(error.statusCode).send({ error: error.clientError || 'Request could not be processed' });
+    return;
+  }
+
+  fastify.log.error({
+    err: error,
+    method: request.method,
+    url: request.url
+  }, 'Unhandled request failure');
+  reply.code(500).send({ error: 'Internal server error' });
+});
 
 // Security middleware: Validate X-OpenBrain-Key
 async function validateApiKey(request, reply) {
   const providedKey = request.headers['x-openbrain-key'];
 
   if (!providedKey || providedKey !== OPENBRAIN_API_KEY) {
-    reply.code(401).send({ error: 'Unauthorized: Invalid API key' });
+    reply.code(401).send({ error: 'Unauthorized' });
     return reply;
   }
 }
 
 // Health check endpoint
-fastify.get('/health', async (request, reply) => {
+fastify.get('/health', async () => {
   return { status: 'healthy', timestamp: new Date().toISOString() };
 });
 
@@ -109,9 +236,9 @@ async function extractMetadata(content, existingMetadata = {}) {
 
   try {
     const response = await openai.chat.completions.create({
-      model: "gpt-4o",
+      model: 'gpt-4o',
       messages: [{
-        role: "system",
+        role: 'system',
         content: `You are a metadata extraction assistant. Extract structured information from text and return ONLY valid JSON.
 
 Extract:
@@ -126,10 +253,10 @@ ${JSON.stringify(METADATA_SCHEMA, null, 2)}
 
 If no items of a type are found, return an empty array for that type. Be conservative with confidence scores - only extract what is clearly stated in the text.`
       }, {
-        role: "user",
+        role: 'user',
         content: `Extract metadata from this text:\n\n${content.substring(0, 4000)}\n\nReturn JSON following the specified schema.`
       }],
-      response_format: { type: "json_object" },
+      response_format: { type: 'json_object' },
       temperature: 0.1
     });
 
@@ -144,10 +271,10 @@ If no items of a type are found, return an empty array for that type. Be conserv
         action_items: extracted.action_items || []
       },
       extracted_at: new Date().toISOString(),
-      extraction_model: "gpt-4o"
+      extraction_model: 'gpt-4o'
     };
   } catch (error) {
-    fastify.log.error('Metadata extraction failed:', error.message);
+    fastify.log.error({ message: error.message }, 'Metadata extraction failed');
     // Return original metadata on failure
     return existingMetadata;
   }
@@ -169,17 +296,19 @@ async function extractTextFromFile(file, filename) {
       content = buffer.toString('utf-8');
       break;
 
-    case '.pdf':
+    case '.pdf': {
       // PDF files - use pdf-parse
       const data = await pdf(buffer);
       content = data.text;
       break;
+    }
 
-    case '.docx':
+    case '.docx': {
       // Word documents - use mammoth
       const result = await mammoth.extractRawText({ buffer });
       content = result.value;
       break;
+    }
 
     case '.jpg':
     case '.jpeg':
@@ -192,7 +321,7 @@ async function extractTextFromFile(file, filename) {
       break;
 
     default:
-      throw new Error(`Unsupported file type: ${ext}`);
+      throw createClientError(400, 'Unsupported file type');
   }
 
   return { content, fileSize };
@@ -201,7 +330,7 @@ async function extractTextFromFile(file, filename) {
 // Helper: Extract text from images using z.ai GLM-OCR
 async function extractTextWithGLMOCR(buffer, filename) {
   if (!ZAI_API_KEY) {
-    throw new Error('ZAI_API_KEY is not configured. Please add it to your .env file.');
+    throw createClientError(503, 'Image text extraction is unavailable');
   }
 
   try {
@@ -211,10 +340,10 @@ async function extractTextWithGLMOCR(buffer, filename) {
     // Determine MIME type based on file extension
     const ext = path.extname(filename).toLowerCase();
     const mimeType = ext === '.png' ? 'image/png' :
-                     ext === '.gif' ? 'image/gif' :
-                     ext === '.bmp' ? 'image/bmp' :
-                     ext === '.webp' ? 'image/webp' :
-                     'image/jpeg';
+      ext === '.gif' ? 'image/gif' :
+        ext === '.bmp' ? 'image/bmp' :
+          ext === '.webp' ? 'image/webp' :
+            'image/jpeg';
 
     // Call z.ai GLM-OCR API
     const response = await axios.post(
@@ -225,41 +354,52 @@ async function extractTextWithGLMOCR(buffer, filename) {
       },
       {
         headers: {
-          'Authorization': `Bearer ${ZAI_API_KEY}`,
+          Authorization: `Bearer ${ZAI_API_KEY}`,
           'Content-Type': 'application/json'
         },
-        timeout: 30000 // 30 second timeout
+        timeout: 30000
       }
     );
 
-    fastify.log.info('GLM-OCR API response status:', response.status);
+    fastify.log.info({ statusCode: response.status }, 'GLM-OCR request completed');
 
     // Extract text from response - the API returns data at root level
     if (response.data) {
-      // The text content is in the md_results field
       if (response.data.md_results) {
         return response.data.md_results;
       }
-      // Fallback: check for other possible text fields
+
       if (response.data.text) {
         return response.data.text;
       }
+
       if (response.data.content) {
         return response.data.content;
       }
-      // Last resort: return entire response as JSON for debugging
-      fastify.log.error('Unexpected GLM-OCR response format:', JSON.stringify(response.data).substring(0, 500));
-      throw new Error('Could not extract text from GLM-OCR response');
-    } else {
-      throw new Error('Invalid response format from GLM-OCR API');
+
+      fastify.log.warn({
+        statusCode: response.status,
+        responseKeys: getObjectKeys(response.data)
+      }, 'Unexpected GLM-OCR response format');
+      throw createClientError(502, 'Image text extraction failed');
     }
+
+    throw createClientError(502, 'Image text extraction failed');
   } catch (error) {
-    if (error.response) {
-      fastify.log.error('GLM-OCR API error response:', error.response.status, JSON.stringify(error.response.data).substring(0, 500));
-    } else {
-      fastify.log.error('GLM-OCR API error:', error.message);
+    if (error.clientError) {
+      throw error;
     }
-    throw new Error(`Failed to extract text from image: ${error.response?.data?.message || error.message}`);
+
+    if (error.response) {
+      fastify.log.error({
+        statusCode: error.response.status,
+        responseKeys: getObjectKeys(error.response.data)
+      }, 'GLM-OCR API error response');
+    } else {
+      fastify.log.error({ message: error.message }, 'GLM-OCR API error');
+    }
+
+    throw createClientError(502, 'Image text extraction failed');
   }
 }
 
@@ -280,6 +420,8 @@ fastify.post('/capture', {
   const { content, metadata = {} } = request.body;
 
   try {
+    enforceContentLength(content, MAX_CAPTURE_CONTENT_CHARS, 'Content');
+
     // Extract intelligent metadata using GPT-4o
     const enhancedMetadata = await extractMetadata(content, metadata);
 
@@ -315,13 +457,12 @@ fastify.post('/capture', {
         created_at
       }
     };
-
   } catch (error) {
-    fastify.log.error('Error capturing thought:', error);
-    reply.code(500).send({
-      error: 'Internal server error',
-      message: error.message
-    });
+    fastify.log.error({
+      err: error,
+      contentLength: typeof content === 'string' ? content.length : undefined
+    }, 'Error capturing thought');
+    sendClientError(reply, error);
   }
 });
 
@@ -340,22 +481,12 @@ fastify.post('/upload', {
     const filename = data.filename;
     const file = data.file;
     const mimetype = data.mimetype;
+    const clientMetadata = parseMultipartMetadata(data.fields || {});
 
     fastify.log.info(`Processing file upload: ${filename} (${mimetype})`);
 
     // Extract text from file
-    let extractionResult;
-    try {
-      extractionResult = await extractTextFromFile(file, filename);
-    } catch (error) {
-      fastify.log.error('Error extracting text from file:', error);
-      reply.code(400).send({
-        error: 'Failed to extract text from file',
-        message: error.message
-      });
-      return;
-    }
-
+    const extractionResult = await extractTextFromFile(file, filename);
     const { content, fileSize } = extractionResult;
 
     // Validate extracted content
@@ -364,14 +495,10 @@ fastify.post('/upload', {
       return;
     }
 
+    enforceContentLength(content, MAX_EXTRACTED_CONTENT_CHARS, 'Extracted content');
+
     // Generate metadata
-    const metadata = {
-      source: 'file_upload',
-      filename: filename,
-      file_type: path.extname(filename).toLowerCase(),
-      file_size: fileSize,
-      mimetype: mimetype
-    };
+    const metadata = buildUploadMetadata(filename, mimetype, fileSize, clientMetadata);
 
     // Extract intelligent metadata using GPT-4o
     const enhancedMetadata = await extractMetadata(content, metadata);
@@ -411,7 +538,7 @@ fastify.post('/upload', {
       success: true,
       data: {
         id,
-        content: content.substring(0, 500) + (content.length > 500 ? '...' : ''), // Preview only
+        content: content.substring(0, 500) + (content.length > 500 ? '...' : ''),
         full_content_length: content.length,
         metadata: enhancedMetadata,
         original_filename: filename,
@@ -420,13 +547,9 @@ fastify.post('/upload', {
         created_at
       }
     };
-
   } catch (error) {
-    fastify.log.error('Error processing file upload:', error);
-    reply.code(500).send({
-      error: 'Internal server error',
-      message: error.message
-    });
+    fastify.log.error({ err: error }, 'Error processing file upload');
+    sendClientError(reply, error);
   }
 });
 
@@ -454,7 +577,7 @@ const start = async () => {
         retries--;
         if (retries === 0) throw err;
         fastify.log.warn(`Database not ready, retrying... (${retries} attempts left)`);
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        await new Promise((resolve) => setTimeout(resolve, 2000));
       }
     }
 

@@ -4,6 +4,11 @@ import express from 'express';
 import pg from 'pg';
 import OpenAI from 'openai';
 
+const JSON_RPC_VERSION = '2.0';
+const MAX_LIMIT = 25;
+const MAX_QUERY_LENGTH = 1000;
+const ALLOWED_ACTION_TYPES = new Set(['task', 'decision', 'commitment', 'question']);
+
 // Environment variables
 const {
   DB_HOST,
@@ -12,19 +17,22 @@ const {
   DB_USER,
   DB_PASSWORD,
   OPENAI_API_KEY,
-  PORT = 3000
+  MCP_API_KEY,
+  PORT = 3000,
 } = process.env;
 
 // Validate required environment variables
-if (!DB_PASSWORD) {
-  console.error('Missing required environment variable: DB_PASSWORD');
-  process.exit(1);
+for (const variableName of ['DB_PASSWORD', 'MCP_API_KEY']) {
+  if (!process.env[variableName]) {
+    console.error(`Missing required environment variable: ${variableName}`);
+    process.exit(1);
+  }
 }
 
 // PostgreSQL connection pool (using brain_reader role - read-only)
 const pool = new pg.Pool({
   host: DB_HOST,
-  port: parseInt(DB_PORT),
+  port: parseInt(DB_PORT, 10),
   database: DB_NAME,
   user: DB_USER,
   password: DB_PASSWORD,
@@ -40,7 +48,7 @@ const openai = OPENAI_API_KEY ? new OpenAI({
 
 // Express app
 const app = express();
-app.use(express.json());
+const mcpJsonParser = express.json({ strict: true });
 
 // MCP Server metadata
 const SERVER_INFO = {
@@ -61,16 +69,16 @@ const TOOLS = [
       properties: {
         query: {
           type: 'string',
-          description: 'The search query to find semantically similar thoughts'
+          description: 'The search query to find semantically similar thoughts',
         },
         limit: {
           type: 'number',
           description: 'Maximum number of results to return (default: 10)',
-          default: 10
-        }
+          default: 10,
+        },
       },
-      required: ['query']
-    }
+      required: ['query'],
+    },
   },
   {
     name: 'list_recent',
@@ -81,18 +89,18 @@ const TOOLS = [
         limit: {
           type: 'number',
           description: 'Maximum number of recent thoughts to return (default: 20)',
-          default: 20
-        }
-      }
-    }
+          default: 20,
+        },
+      },
+    },
   },
   {
     name: 'get_stats',
     description: 'Get statistics about your memory (total thoughts, latest thought, etc.)',
     inputSchema: {
       type: 'object',
-      properties: {}
-    }
+      properties: {},
+    },
   },
   {
     name: 'semantic_search_filtered',
@@ -102,12 +110,12 @@ const TOOLS = [
       properties: {
         query: {
           type: 'string',
-          description: 'The search query to find semantically similar thoughts'
+          description: 'The search query to find semantically similar thoughts',
         },
         limit: {
           type: 'number',
           description: 'Maximum number of results to return (default: 10)',
-          default: 10
+          default: 10,
         },
         filters: {
           type: 'object',
@@ -115,37 +123,282 @@ const TOOLS = [
             people: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Match any extracted person name'
+              description: 'Match any extracted person name',
             },
             topics: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Match any extracted topic name'
+              description: 'Match any extracted topic name',
             },
             action_types: {
               type: 'array',
               items: { type: 'string', enum: ['task', 'decision', 'commitment', 'question'] },
-              description: 'Match any extracted action item type'
-            }
-          }
-        }
+              description: 'Match any extracted action item type',
+            },
+          },
+        },
       },
-      required: ['query']
-    }
+      required: ['query'],
+    },
   },
   {
     name: 'get_metadata_stats',
     description: 'Get metadata statistics and available filters (people, topics, action items)',
     inputSchema: {
       type: 'object',
-      properties: {}
-    }
-  }
+      properties: {},
+    },
+  },
 ];
+
+const TOOL_NAMES = new Set(TOOLS.map((tool) => tool.name));
+
+class JsonRpcError extends Error {
+  constructor({ status = 400, code, message, id = null }) {
+    super(message);
+    this.name = 'JsonRpcError';
+    this.status = status;
+    this.code = code;
+    this.id = id;
+  }
+}
+
+function isPlainObject(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function getRequestId(body) {
+  if (!isPlainObject(body) || !Object.prototype.hasOwnProperty.call(body, 'id')) {
+    return null;
+  }
+
+  return body.id;
+}
+
+function createJsonRpcErrorResponse(code, message, id = null) {
+  return {
+    jsonrpc: JSON_RPC_VERSION,
+    error: { code, message },
+    id,
+  };
+}
+
+function sendJsonRpcError(res, error, fallbackId = null) {
+  const id = error instanceof JsonRpcError ? error.id ?? fallbackId : fallbackId;
+  const status = error instanceof JsonRpcError ? error.status : 500;
+  const code = error instanceof JsonRpcError ? error.code : -32603;
+  const message = error instanceof JsonRpcError ? error.message : 'Internal error';
+
+  return res.status(status).json(createJsonRpcErrorResponse(code, message, id));
+}
+
+function invalidRequest(message, id = null) {
+  return new JsonRpcError({ status: 400, code: -32600, message, id });
+}
+
+function invalidParams(message, id = null) {
+  return new JsonRpcError({ status: 400, code: -32602, message, id });
+}
+
+function methodNotFound(id = null) {
+  return new JsonRpcError({ status: 400, code: -32601, message: 'Method not found', id });
+}
+
+function toolNotFound(id = null) {
+  return new JsonRpcError({ status: 400, code: -32601, message: 'Tool not found', id });
+}
+
+function normalizeLimit(value, defaultLimit, id) {
+  if (value === undefined) {
+    return defaultLimit;
+  }
+
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw invalidParams('Invalid params: limit must be a finite number', id);
+  }
+
+  return Math.min(MAX_LIMIT, Math.max(1, Math.trunc(value)));
+}
+
+function normalizeStringArray(values, fieldName, id, allowedValues = null) {
+  if (values === undefined) {
+    return undefined;
+  }
+
+  if (!Array.isArray(values)) {
+    throw invalidParams(`Invalid params: ${fieldName} must be an array of non-empty strings`, id);
+  }
+
+  const normalizedValues = values.map((value) => {
+    if (typeof value !== 'string') {
+      throw invalidParams(`Invalid params: ${fieldName} must be an array of non-empty strings`, id);
+    }
+
+    const trimmedValue = value.trim();
+    if (!trimmedValue) {
+      throw invalidParams(`Invalid params: ${fieldName} must be an array of non-empty strings`, id);
+    }
+
+    if (allowedValues && !allowedValues.has(trimmedValue.toLowerCase())) {
+      throw invalidParams(`Invalid params: ${fieldName} contains an unsupported value`, id);
+    }
+
+    return trimmedValue;
+  });
+
+  return normalizedValues;
+}
+
+function normalizeFilters(filters, id) {
+  if (filters === undefined) {
+    return undefined;
+  }
+
+  if (!isPlainObject(filters)) {
+    throw invalidParams('Invalid params: filters must be an object', id);
+  }
+
+  const normalizedFilters = {};
+
+  const people = normalizeStringArray(filters.people, 'filters.people', id);
+  if (people && people.length > 0) {
+    normalizedFilters.people = people;
+  }
+
+  const topics = normalizeStringArray(filters.topics, 'filters.topics', id);
+  if (topics && topics.length > 0) {
+    normalizedFilters.topics = topics;
+  }
+
+  const actionTypes = normalizeStringArray(filters.action_types, 'filters.action_types', id, ALLOWED_ACTION_TYPES);
+  if (actionTypes && actionTypes.length > 0) {
+    normalizedFilters.action_types = actionTypes.map((actionType) => actionType.toLowerCase());
+  }
+
+  return normalizedFilters;
+}
+
+function requireQuery(args, id) {
+  if (typeof args.query !== 'string') {
+    throw invalidParams('Invalid params: query must be a non-empty string', id);
+  }
+
+  const query = args.query.trim();
+  if (!query) {
+    throw invalidParams('Invalid params: query must be a non-empty string', id);
+  }
+
+  if (query.length > MAX_QUERY_LENGTH) {
+    throw invalidParams(`Invalid params: query must not exceed ${MAX_QUERY_LENGTH} characters`, id);
+  }
+
+  return query;
+}
+
+function normalizeToolArguments(toolName, rawArguments, id) {
+  const args = rawArguments === undefined ? {} : rawArguments;
+
+  if (!isPlainObject(args)) {
+    throw invalidParams('Invalid params: arguments must be an object', id);
+  }
+
+  switch (toolName) {
+    case 'semantic_search':
+      return {
+        query: requireQuery(args, id),
+        limit: normalizeLimit(args.limit, 10, id),
+      };
+
+    case 'semantic_search_filtered':
+      return {
+        query: requireQuery(args, id),
+        limit: normalizeLimit(args.limit, 10, id),
+        filters: normalizeFilters(args.filters, id) ?? {},
+      };
+
+    case 'list_recent':
+      return {
+        limit: normalizeLimit(args.limit, 20, id),
+      };
+
+    case 'get_stats':
+    case 'get_metadata_stats':
+      return {};
+
+    default:
+      throw toolNotFound(id);
+  }
+}
+
+function validateMcpRequest(body) {
+  const id = getRequestId(body);
+
+  if (!isPlainObject(body)) {
+    throw invalidRequest('Invalid Request: body must be a JSON object', id);
+  }
+
+  if (body.jsonrpc !== undefined && body.jsonrpc !== JSON_RPC_VERSION) {
+    throw invalidRequest(`Invalid Request: jsonrpc must be ${JSON_RPC_VERSION}`, id);
+  }
+
+  if (typeof body.method !== 'string' || !body.method.trim()) {
+    throw invalidRequest('Invalid Request: method must be a non-empty string', id);
+  }
+
+  switch (body.method) {
+    case 'initialize':
+    case 'tools/list':
+      if (body.params !== undefined && !isPlainObject(body.params)) {
+        throw invalidRequest('Invalid Request: params must be an object when provided', id);
+      }
+
+      return {
+        id,
+        method: body.method,
+      };
+
+    case 'tools/call': {
+      if (!isPlainObject(body.params)) {
+        throw invalidParams('Invalid params: params must be an object', id);
+      }
+
+      const toolName = typeof body.params.name === 'string' ? body.params.name.trim() : '';
+      if (!toolName) {
+        throw invalidParams('Invalid params: name must be a non-empty string', id);
+      }
+
+      if (!TOOL_NAMES.has(toolName)) {
+        throw toolNotFound(id);
+      }
+
+      return {
+        id,
+        method: body.method,
+        params: {
+          name: toolName,
+          arguments: normalizeToolArguments(toolName, body.params.arguments, id),
+        },
+      };
+    }
+
+    default:
+      throw methodNotFound(id);
+  }
+}
+
+function requireMcpAuth(req, res, next) {
+  const requestKey = req.get('X-MCP-Key');
+
+  if (!requestKey || requestKey !== MCP_API_KEY) {
+    return res.status(401).json(createJsonRpcErrorResponse(-32001, 'Unauthorized', null));
+  }
+
+  return next();
+}
 
 async function createQueryEmbedding(query) {
   if (!openai) {
-    throw new Error('OPENAI_API_KEY is required for semantic search');
+    throw new Error('Semantic search is unavailable');
   }
 
   const embeddingResponse = await openai.embeddings.create({
@@ -169,7 +422,7 @@ function buildMetadataFilterClause(filters = {}, startingIndex = 3) {
       WHERE LOWER(person->>'name') = ANY($${nextIndex}::text[])
     )`);
     values.push(filters.people.map((person) => person.toLowerCase()));
-    nextIndex++;
+    nextIndex += 1;
   }
 
   if (filters.topics?.length > 0) {
@@ -179,7 +432,7 @@ function buildMetadataFilterClause(filters = {}, startingIndex = 3) {
       WHERE LOWER(topic->>'name') = ANY($${nextIndex}::text[])
     )`);
     values.push(filters.topics.map((topic) => topic.toLowerCase()));
-    nextIndex++;
+    nextIndex += 1;
   }
 
   if (filters.action_types?.length > 0) {
@@ -189,7 +442,7 @@ function buildMetadataFilterClause(filters = {}, startingIndex = 3) {
       WHERE LOWER(action->>'type') = ANY($${nextIndex}::text[])
     )`);
     values.push(filters.action_types.map((actionType) => actionType.toLowerCase()));
-    nextIndex++;
+    nextIndex += 1;
   }
 
   return {
@@ -199,10 +452,6 @@ function buildMetadataFilterClause(filters = {}, startingIndex = 3) {
 }
 
 async function runSemanticSearch(query, limit = 10, filters = null) {
-  if (!query) {
-    throw new Error('Missing required parameter: query');
-  }
-
   const embeddingString = await createQueryEmbedding(query);
   const values = [embeddingString, limit];
   let whereClause = 'embedding IS NOT NULL';
@@ -220,7 +469,7 @@ async function runSemanticSearch(query, limit = 10, filters = null) {
      WHERE ${whereClause}
      ORDER BY embedding <=> $1::vector
      LIMIT $2`,
-    values
+    values,
   );
 
   return result.rows;
@@ -272,6 +521,89 @@ async function getMetadataStats() {
   };
 }
 
+async function executeTool(toolName, args) {
+  switch (toolName) {
+    case 'semantic_search': {
+      const thoughts = await runSemanticSearch(args.query, args.limit);
+
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            query: args.query,
+            thoughts,
+            count: thoughts.length,
+          }, null, 2),
+        }],
+      };
+    }
+
+    case 'semantic_search_filtered': {
+      const thoughts = await runSemanticSearch(args.query, args.limit, args.filters);
+
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            query: args.query,
+            filters: args.filters,
+            thoughts,
+            count: thoughts.length,
+          }, null, 2),
+        }],
+      };
+    }
+
+    case 'list_recent': {
+      const dbResult = await pool.query(
+        'SELECT id, content, metadata, created_at FROM thoughts ORDER BY created_at DESC LIMIT $1',
+        [args.limit],
+      );
+
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            thoughts: dbResult.rows,
+            count: dbResult.rows.length,
+          }, null, 2),
+        }],
+      };
+    }
+
+    case 'get_stats': {
+      const countResult = await pool.query('SELECT COUNT(*) AS count FROM thoughts');
+      const latestResult = await pool.query(
+        'SELECT created_at FROM thoughts ORDER BY created_at DESC LIMIT 1',
+      );
+
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            total_thoughts: parseInt(countResult.rows[0].count, 10),
+            latest_thought_at: latestResult.rows[0]?.created_at || null,
+          }, null, 2),
+        }],
+      };
+    }
+
+    case 'get_metadata_stats': {
+      const metadataStats = await getMetadataStats();
+
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify(metadataStats, null, 2),
+        }],
+      };
+    }
+
+    default:
+      throw toolNotFound();
+  }
+}
+
 // Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'healthy', server: SERVER_INFO });
@@ -284,12 +616,12 @@ app.get('/sse', (req, res) => {
   res.setHeader('Connection', 'keep-alive');
 
   // Send initial server info
-  res.write(`event: endpoint\n`);
+  res.write('event: endpoint\n');
   res.write(`data: ${JSON.stringify({ endpoint: '/mcp' })}\n\n`);
 
   // Keep connection alive
   const heartbeat = setInterval(() => {
-    res.write(`: keepalive\n\n`);
+    res.write(': keepalive\n\n');
   }, 15000);
 
   req.on('close', () => {
@@ -298,161 +630,68 @@ app.get('/sse', (req, res) => {
 });
 
 // Main MCP endpoint
-app.post('/mcp', async (req, res) => {
-  try {
-    const { method, params, id } = req.body;
+app.post('/mcp', requireMcpAuth, mcpJsonParser, async (req, res) => {
+  const requestId = getRequestId(req.body);
 
-    // Handle initialize method
-    if (method === 'initialize') {
+  try {
+    const request = validateMcpRequest(req.body);
+
+    if (request.method === 'initialize') {
       return res.json({
-        jsonrpc: '2.0',
+        jsonrpc: JSON_RPC_VERSION,
         result: {
           protocolVersion: '2024-11-05',
           serverInfo: SERVER_INFO,
           capabilities: {
-            tools: {}
-          }
+            tools: {},
+          },
         },
-        id: id || Date.now()
+        id: request.id ?? Date.now(),
       });
     }
 
-    // Handle tools/list method
-    if (method === 'tools/list') {
+    if (request.method === 'tools/list') {
       return res.json({
-        jsonrpc: '2.0',
+        jsonrpc: JSON_RPC_VERSION,
         result: {
-          tools: TOOLS
+          tools: TOOLS,
         },
-        id: id || Date.now()
+        id: request.id ?? Date.now(),
       });
     }
 
-    // Handle tools/call method
-    if (method === 'tools/call') {
-      const { name, arguments: args } = params;
+    const result = await executeTool(request.params.name, request.params.arguments);
 
-      let result;
-      switch (name) {
-        case 'semantic_search': {
-          const { query, limit = 10 } = args || {};
-          const thoughts = await runSemanticSearch(query, limit);
-
-          result = {
-            content: [{
-              type: 'text',
-              text: JSON.stringify({
-                query,
-                thoughts,
-                count: thoughts.length,
-              }, null, 2),
-            }],
-          };
-          break;
-        }
-
-        case 'semantic_search_filtered': {
-          const { query, limit = 10, filters = {} } = args || {};
-          const thoughts = await runSemanticSearch(query, limit, filters);
-
-          result = {
-            content: [{
-              type: 'text',
-              text: JSON.stringify({
-                query,
-                filters,
-                thoughts,
-                count: thoughts.length,
-              }, null, 2),
-            }],
-          };
-          break;
-        }
-
-        case 'list_recent': {
-          const { limit = 20 } = args || {};
-
-          const dbResult = await pool.query(
-            'SELECT id, content, metadata, created_at FROM thoughts ORDER BY created_at DESC LIMIT $1',
-            [limit]
-          );
-
-          result = {
-            content: [{
-              type: 'text',
-              text: JSON.stringify({
-                thoughts: dbResult.rows,
-                count: dbResult.rows.length,
-              }, null, 2),
-            }],
-          };
-          break;
-        }
-
-        case 'get_stats': {
-          const countResult = await pool.query('SELECT COUNT(*) as count FROM thoughts');
-          const latestResult = await pool.query(
-            'SELECT created_at FROM thoughts ORDER BY created_at DESC LIMIT 1'
-          );
-
-          result = {
-            content: [{
-              type: 'text',
-              text: JSON.stringify({
-                total_thoughts: parseInt(countResult.rows[0].count, 10),
-                latest_thought_at: latestResult.rows[0]?.created_at || null,
-              }, null, 2),
-            }],
-          };
-          break;
-        }
-
-        case 'get_metadata_stats': {
-          const metadataStats = await getMetadataStats();
-
-          result = {
-            content: [{
-              type: 'text',
-              text: JSON.stringify(metadataStats, null, 2),
-            }],
-          };
-          break;
-        }
-
-        default:
-          throw new Error(`Unknown tool: ${name}`);
-      }
-
-      return res.json({
-        jsonrpc: '2.0',
-        result,
-        id: id || Date.now(),
-      });
-    }
-
-    // Unknown method
-    return res.status(400).json({
-      jsonrpc: '2.0',
-      error: {
-        code: -32601,
-        message: `Method not found: ${method}`,
-        data: { availableMethods: ['initialize', 'tools/list', 'tools/call'] }
-      },
-      id: id || Date.now()
+    return res.json({
+      jsonrpc: JSON_RPC_VERSION,
+      result,
+      id: request.id ?? Date.now(),
     });
-
   } catch (error) {
+    if (error instanceof JsonRpcError) {
+      return sendJsonRpcError(res, error, requestId);
+    }
+
     console.error('Error processing MCP request:', error);
-    res.status(500).json({
-      jsonrpc: '2.0',
-      error: {
-        code: -32603,
-        message: 'Internal error',
-        data: error.message
-      },
-      id: req.body.id || Date.now()
-    });
+    return sendJsonRpcError(
+      res,
+      new JsonRpcError({ status: 500, code: -32603, message: 'Internal error', id: requestId }),
+      requestId,
+    );
   }
+});
+
+app.use((error, req, res, next) => {
+  if (req.path === '/mcp' && error instanceof SyntaxError && error.status === 400 && 'body' in error) {
+    return res.status(400).json(createJsonRpcErrorResponse(-32700, 'Parse error', null));
+  }
+
+  if (req.path === '/mcp') {
+    console.error('Unexpected MCP middleware error:', error);
+    return res.status(500).json(createJsonRpcErrorResponse(-32603, 'Internal error', null));
+  }
+
+  return next(error);
 });
 
 // Graceful shutdown
@@ -474,17 +713,17 @@ async function main() {
       await pool.query('SELECT 1');
       break;
     } catch (err) {
-      retries--;
+      retries -= 1;
       if (retries === 0) throw err;
       console.error(`Database not ready, retrying... (${retries} attempts left)`);
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await new Promise((resolve) => setTimeout(resolve, 2000));
     }
   }
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`MCP HTTP server listening on port ${PORT}`);
     console.log(`Server info: ${SERVER_INFO.name} v${SERVER_INFO.version}`);
-    console.log(`Available tools: ${TOOLS.map(t => t.name).join(', ')}`);
+    console.log(`Available tools: ${TOOLS.map((tool) => tool.name).join(', ')}`);
   });
 }
 

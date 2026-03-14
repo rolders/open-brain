@@ -1,56 +1,99 @@
-# MCP Connection Guide for OpenClaw
+# MCP Connection Guide
 
-This guide shows how to connect OpenClaw (or any MCP-compatible client) to your Open Brain memory system.
+Open Brain exposes MCP in two modes:
+- `mcp-server`: stdio for local desktop apps
+- `mcp-server-http`: HTTP for clients that support MCP over HTTP
 
-## Connection Methods
+## Recommended default
 
-There are two ways to connect to the Open Brain MCP server:
+Use stdio when possible. The HTTP endpoint is optional and is intentionally published on localhost only:
 
-### Method 1: HTTP Connection (Recommended for OpenClaw)
+```text
+http://127.0.0.1:3000/mcp
+```
 
-Connect via HTTP endpoint on port 3000.
+That means:
+- local host processes can connect directly
+- remote machines cannot connect unless you add an explicit tunnel or proxy
 
-**Configuration:**
+## Required setup
+
+Run the bootstrap flow first:
+
+```bash
+./setup.sh
+./validate.sh
+```
+
+Make sure `.env` contains:
+
+```bash
+OPENAI_API_KEY=...
+MCP_API_KEY=...
+BRAIN_READER_PASSWORD=...
+```
+
+Start the HTTP service only if you need it:
+
+```bash
+docker compose up -d mcp-server-http
+```
+
+## HTTP MCP client config
+
+Basic endpoint:
+
 ```json
 {
   "mcpServers": {
     "openbrain": {
-      "url": "http://localhost:3000/mcp",
+      "url": "http://127.0.0.1:3000/mcp",
       "transport": "http"
     }
   }
 }
 ```
 
-**If connecting from outside Docker:**
+If your MCP client supports custom headers, configure the generated MCP key as well:
+
 ```json
 {
   "mcpServers": {
     "openbrain": {
-      "url": "http://localhost:3000/mcp",
-      "transport": "http"
+      "url": "http://127.0.0.1:3000/mcp",
+      "transport": "http",
+      "headers": {
+        "X-MCP-Key": "<your MCP_API_KEY>"
+      }
     }
   }
 }
 ```
 
-**If using docker-compose networking:**
+If your client cannot set headers directly, front the service with a local proxy that injects `X-MCP-Key`.
+
+## Docker-network clients
+
+Containers on the same Compose network can use the internal service name instead of the host bind:
+
 ```json
 {
   "mcpServers": {
     "openbrain": {
       "url": "http://mcp-server-http:3000/mcp",
-      "transport": "http"
+      "transport": "http",
+      "headers": {
+        "X-MCP-Key": "<your MCP_API_KEY>"
+      }
     }
   }
 }
 ```
 
-### Method 2: Stdio Connection (For Desktop Apps)
+## Stdio MCP config
 
-Connect via Docker stdio (recommended for Claude Desktop, Cursor).
+For Claude Desktop, Cursor, and similar tools:
 
-**Configuration:**
 ```json
 {
   "mcpServers": {
@@ -68,124 +111,26 @@ Connect via Docker stdio (recommended for Claude Desktop, Cursor).
 }
 ```
 
-## Available MCP Tools
+Equivalent command-line form:
 
-Once connected, OpenClaw can access these tools:
-
-### 1. semantic_search
-Search your memory using semantic similarity.
-
-**Parameters:**
-- `query` (string, required): Search query
-- `limit` (number, optional): Max results (default: 5)
-
-**Example:**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "tools/call",
-  "params": {
-    "name": "semantic_search",
-    "arguments": {
-      "query": "docker containers",
-      "limit": 5
-    }
-  }
-}
+```text
+docker exec -i openbrain-mcp-server node /app/index.js
 ```
 
-### 2. list_recent
-Get most recent thoughts.
+## Quick curl checks
 
-**Parameters:**
-- `limit` (number, optional): Max results (default: 20)
+Health check:
 
-**Example:**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "tools/call",
-  "params": {
-    "name": "list_recent",
-    "arguments": {
-      "limit": 10
-    }
-  }
-}
-```
-
-### 3. get_stats
-Get memory statistics.
-
-**Parameters:** None
-
-**Example:**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "tools/call",
-  "params": {
-    "name": "get_stats",
-    "arguments": {}
-  }
-}
-```
-
-## OpenClaw-Specific Configuration
-
-### For OpenClaw Desktop App
-
-1. **Open OpenClaw Settings**
-2. **Navigate to MCP Servers**
-3. **Add new server with these settings:**
-
-**Using HTTP (Recommended):**
-```
-Name: openbrain
-URL: http://localhost:3000/mcp
-Transport: HTTP
-```
-
-**Using Docker:**
-```
-Name: openbrain
-Command: docker exec -i openbrain-mcp-server node /app/index.js
-Type: stdio
-```
-
-### For OpenClaw CLI
-
-**Environment variables:**
 ```bash
-export OPENBRAIN_MCP_URL="http://localhost:3000/mcp"
-export OPENBRAIN_API_KEY="your_openbrain_api_key_here"
+curl http://127.0.0.1:3000/health
 ```
 
-**Config file (~/.openclaw/config.json):**
-```json
-{
-  "mcp": {
-    "servers": {
-      "openbrain": {
-        "url": "http://localhost:3000/mcp",
-        "apiKey": "your_openbrain_api_key_here"
-      }
-    }
-  }
-}
-```
+Tool list request:
 
-## Testing the Connection
-
-### Test via curl
-
-**List available tools:**
 ```bash
-curl -X POST http://localhost:3000/mcp \
+curl -X POST http://127.0.0.1:3000/mcp \
   -H "Content-Type: application/json" \
+  -H "X-MCP-Key: $MCP_API_KEY" \
   -d '{
     "jsonrpc": "2.0",
     "id": 1,
@@ -193,165 +138,44 @@ curl -X POST http://localhost:3000/mcp \
   }'
 ```
 
-**Test semantic search:**
+Tool call request:
+
 ```bash
-curl -X POST http://localhost:3000/mcp \
+curl -X POST http://127.0.0.1:3000/mcp \
   -H "Content-Type: application/json" \
+  -H "X-MCP-Key: $MCP_API_KEY" \
   -d '{
     "jsonrpc": "2.0",
-    "id": 1,
+    "id": 2,
     "method": "tools/call",
     "params": {
-      "name": "semantic_search",
-      "arguments": {
-        "query": "docker",
-        "limit": 3
-      }
+      "name": "list_recent",
+      "arguments": {"limit": 5}
     }
   }'
 ```
 
-### Test via Docker exec
-
-```bash
-docker exec -i openbrain-mcp-server node /app/index.js << EOF
-{"jsonrpc":"2.0","id":1,"method":"tools/list"}
-EOF
-```
-
 ## Troubleshooting
 
-### Connection Refused
+### Connection refused
 
-**Problem:** Cannot connect to MCP server
-
-**Solutions:**
-1. Check if MCP HTTP server is running:
-   ```bash
-   docker ps | grep mcp-server-http
-   ```
-
-2. Check server logs:
-   ```bash
-   docker logs openbrain-mcp-server-http
-   ```
-
-3. Restart the server:
-   ```bash
-   docker compose restart mcp-server-http
-   ```
-
-### Permission Errors
-
-**Problem:** Access denied when calling tools
-
-**Solution:** Verify OPENBRAIN_API_KEY matches between services
-
-### Docker Networking Issues
-
-**Problem:** Cannot connect from host machine
-
-**Solution:** Ensure port 3000 is exposed:
 ```bash
 docker compose ps mcp-server-http
-# Should show: 0.0.0.0:3000->3000/tcp
+docker compose logs mcp-server-http
 ```
 
-## Usage Examples
+Remember that the default host bind is `127.0.0.1:3000`, not `0.0.0.0:3000`.
 
-### Example 1: Search and Retrieve
+### Authentication failures
 
-```python
-import openclaw
+Confirm the client is sending the same `MCP_API_KEY` value that exists in `.env`.
 
-# Connect to Open Brain
-openclaw.connect_mcp("openbrain", "http://localhost:3000/mcp")
+### Database permission issues
 
-# Search memory
-results = openclaw.call_tool("semantic_search", {
-    "query": "machine learning embeddings",
-    "limit": 5
-})
+The MCP services use the read-only database role:
 
-# Display results
-for thought in results["thoughts"]:
-    print(f"{thought['similarity']:.1%} - {thought['content'][:100]}...")
+```bash
+BRAIN_READER_PASSWORD=...
 ```
 
-### Example 2: Store and Search
-
-```python
-import openclaw
-
-# Store a memory
-openclaw.call_tool("capture", {
-    "content": "Neural networks use backpropagation for training",
-    "metadata": {"source": "openclaw", "topic": "ml"}
-})
-
-# Search for it
-results = openclaw.call_tool("semantic_search", {
-    "query": "neural network training"
-})
-```
-
-### Example 3: Get Recent Thoughts
-
-```python
-import openclaw
-
-# Get latest 10 thoughts
-recent = openclaw.call_tool("list_recent", {"limit": 10})
-
-for thought in recent["thoughts"]:
-    print(f"{thought['created_at']}: {thought['content'][:80]}...")
-```
-
-## Advanced Configuration
-
-### Custom Port Mapping
-
-If port 3000 is already in use, modify `docker-compose.yml`:
-
-```yaml
-mcp-server-http:
-  ports:
-    - "3001:3000"  # Map host port 3001 to container port 3000
-```
-
-Then connect to: `http://localhost:3001/mcp`
-
-### Multiple MCP Servers
-
-You can run multiple Open Brain instances:
-
-```yaml
-mcp-server-http-1:
-  ports:
-    - "3000:3000"
-
-mcp-server-http-2:
-  ports:
-    - "3001:3000"
-```
-
-## Security Notes
-
-1. **API Key Required**: All /capture requests require OPENBRAIN_API_KEY
-2. **Read-only MCP**: MCP server uses brain_reader role (can only read)
-3. **Local Only**: By default, services are not exposed externally
-4. **HTTPS in Production**: Use Caddy for HTTPS in production environments
-
-## Performance Tips
-
-1. **HTTP vs Stdio**: HTTP is faster for frequent queries
-2. **Connection Pooling**: Reuse HTTP connections when possible
-3. **Batch Queries**: Use higher limit values rather than multiple queries
-4. **Caching**: Cache frequently accessed thoughts in your application
-
-## Additional Resources
-
-- [MCP Specification](https://modelcontextprotocol.io/)
-- [Open Brain README](README.md)
-- [File Ingestion Guide](FILE_INGESTION.md)
-- [Telegram Bot Setup](TELEGRAM_SETUP.md)
+If the database was created before the new env model, review the existing-volume rotation/recreate caveat in [README.md](README.md).

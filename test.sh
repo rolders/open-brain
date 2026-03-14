@@ -8,18 +8,19 @@ API_BASE_URL="http://localhost:8888"
 MCP_HTTP_URL="http://localhost:3000/mcp"
 MCP_HTTP_HEALTH_URL="http://localhost:3000/health"
 
-echo "🧠 Open Brain Test Suite"
-echo "========================"
-echo ""
+printf 'Open Brain Test Suite\n'
+printf '=====================\n\n'
 
-# Colors
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Load credentials
 source .env
+
+: "${OPENBRAIN_API_KEY:?Missing OPENBRAIN_API_KEY in .env}"
+MCP_API_KEY="${MCP_API_KEY:-test-mcp-key}"
+export MCP_API_KEY
 
 wait_for_url() {
   local url="$1"
@@ -37,12 +38,12 @@ wait_for_url() {
 }
 
 ensure_mcp_http_running() {
-  if curl -fsS "$MCP_HTTP_HEALTH_URL" > /dev/null 2>&1; then
-    return 0
-  fi
+  echo -e "${YELLOW}INFO${NC} Recreating mcp-server-http for authenticated MCP checks..."
 
-  echo -e "${YELLOW}ℹ${NC}  mcp-server-http is not reachable on port 3000, starting it for MCP HTTP tests..."
-  docker compose up -d mcp-server-http > /dev/null
+  if ! docker compose up -d --build --force-recreate mcp-server-http > /dev/null; then
+    echo -e "${RED}FAIL${NC} Unable to start mcp-server-http. Ensure docker-compose.yml passes MCP_API_KEY to the service."
+    exit 1
+  fi
 
   if ! wait_for_url "$MCP_HTTP_HEALTH_URL" 20 2; then
     echo -e "${RED}FAIL${NC} Unable to reach mcp-server-http on port 3000 after startup"
@@ -51,7 +52,7 @@ ensure_mcp_http_running() {
 }
 
 wait_for_capture_api() {
-  echo -e "${YELLOW}ℹ${NC}  waiting for Capture API behind Caddy to become ready..."
+  echo -e "${YELLOW}INFO${NC} Waiting for Capture API behind Caddy to become ready..."
 
   for _ in $(seq 1 30); do
     local status
@@ -68,6 +69,28 @@ wait_for_capture_api() {
 
   echo -e "${RED}FAIL${NC} Capture API did not become ready on $API_BASE_URL"
   exit 1
+}
+
+mcp_post() {
+  local payload="$1"
+
+  curl -fsS -X POST "$MCP_HTTP_URL" \
+    -H "Content-Type: application/json" \
+    -H "X-MCP-Key: $MCP_API_KEY" \
+    -d "$payload"
+}
+
+extract_mcp_text_count() {
+  node -e '
+    let input = "";
+    process.stdin.on("data", (chunk) => { input += chunk; });
+    process.stdin.on("end", () => {
+      const response = JSON.parse(input);
+      const text = response.result.content[0].text;
+      const parsed = JSON.parse(text);
+      process.stdout.write(String(parsed.count));
+    });
+  '
 }
 
 wait_for_capture_api
@@ -143,9 +166,7 @@ fi
 
 echo -n "Test 6: File upload stores extracted content and metadata... "
 UPLOAD_FIXTURE=$(mktemp /tmp/openbrain-upload-XXXXXX.txt)
-cat > "$UPLOAD_FIXTURE" <<'EOF'
-Meeting notes: Priya decided the release topic is container security. Marcus will prepare the deployment checklist and follow up tomorrow.
-EOF
+printf '%s\n' 'Meeting notes: Priya decided the release topic is container security. Marcus will prepare the deployment checklist and follow up tomorrow.' > "$UPLOAD_FIXTURE"
 
 UPLOAD_RESULT=$(curl -fsS -X POST "$API_BASE_URL/upload" \
   -H "X-OpenBrain-Key: $OPENBRAIN_API_KEY" \
@@ -161,11 +182,53 @@ else
   exit 1
 fi
 
-echo -n "Test 7: HTTP MCP server exposes metadata tools... "
 ensure_mcp_http_running
-TOOLS_RESULT=$(curl -fsS -X POST "$MCP_HTTP_URL" \
+
+echo -n "Test 7: HTTP MCP health endpoint stays public... "
+MCP_HEALTH=$(curl -fsS "$MCP_HTTP_HEALTH_URL")
+if echo "$MCP_HEALTH" | grep -q '"status":"healthy"'; then
+  echo -e "${GREEN}PASS${NC}"
+else
+  echo -e "${RED}FAIL${NC}"
+  echo "Response: $MCP_HEALTH"
+  exit 1
+fi
+
+echo -n "Test 8: HTTP MCP rejects missing MCP key... "
+MISSING_KEY_BODY=$(mktemp)
+MISSING_KEY_STATUS=$(curl -sS -o "$MISSING_KEY_BODY" -w "%{http_code}" -X POST "$MCP_HTTP_URL" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}')
+MISSING_KEY_RESPONSE=$(<"$MISSING_KEY_BODY")
+rm -f "$MISSING_KEY_BODY"
+if [ "$MISSING_KEY_STATUS" = "401" ] && echo "$MISSING_KEY_RESPONSE" | grep -q '"message":"Unauthorized"'; then
+  echo -e "${GREEN}PASS${NC}"
+else
+  echo -e "${RED}FAIL${NC}"
+  echo "Status: $MISSING_KEY_STATUS"
+  echo "Response: $MISSING_KEY_RESPONSE"
+  exit 1
+fi
+
+echo -n "Test 9: HTTP MCP rejects invalid MCP key... "
+INVALID_KEY_BODY=$(mktemp)
+INVALID_KEY_STATUS=$(curl -sS -o "$INVALID_KEY_BODY" -w "%{http_code}" -X POST "$MCP_HTTP_URL" \
+  -H "Content-Type: application/json" \
+  -H "X-MCP-Key: invalid_key" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}')
+INVALID_KEY_RESPONSE=$(<"$INVALID_KEY_BODY")
+rm -f "$INVALID_KEY_BODY"
+if [ "$INVALID_KEY_STATUS" = "401" ] && echo "$INVALID_KEY_RESPONSE" | grep -q '"message":"Unauthorized"'; then
+  echo -e "${GREEN}PASS${NC}"
+else
+  echo -e "${RED}FAIL${NC}"
+  echo "Status: $INVALID_KEY_STATUS"
+  echo "Response: $INVALID_KEY_RESPONSE"
+  exit 1
+fi
+
+echo -n "Test 10: HTTP MCP server exposes metadata tools with valid auth... "
+TOOLS_RESULT=$(mcp_post '{"jsonrpc":"2.0","id":3,"method":"tools/list"}')
 if echo "$TOOLS_RESULT" | grep -q 'semantic_search_filtered' && \
    echo "$TOOLS_RESULT" | grep -q 'get_metadata_stats'; then
   echo -e "${GREEN}PASS${NC}"
@@ -175,25 +238,73 @@ else
   exit 1
 fi
 
-echo -n "Test 8: Filtered semantic search works through MCP HTTP... "
-FILTERED_SEARCH_RESULT=$(curl -fsS -X POST "$MCP_HTTP_URL" \
+echo -n "Test 11: HTTP MCP sanitizes invalid parameter errors... "
+INVALID_PARAMS_BODY=$(mktemp)
+INVALID_PARAMS_STATUS=$(curl -sS -o "$INVALID_PARAMS_BODY" -w "%{http_code}" -X POST "$MCP_HTTP_URL" \
   -H "Content-Type: application/json" \
+  -H "X-MCP-Key: $MCP_API_KEY" \
   -d '{
     "jsonrpc": "2.0",
-    "id": 2,
+    "id": 4,
     "method": "tools/call",
     "params": {
-      "name": "semantic_search_filtered",
+      "name": "semantic_search",
       "arguments": {
-        "query": "deployment checklist",
-        "limit": 5,
-        "filters": {
-          "people": ["Marcus"],
-          "topics": ["container security"]
-        }
+        "limit": 5
       }
     }
   }')
+INVALID_PARAMS_RESPONSE=$(<"$INVALID_PARAMS_BODY")
+rm -f "$INVALID_PARAMS_BODY"
+if [ "$INVALID_PARAMS_STATUS" = "400" ] && \
+   echo "$INVALID_PARAMS_RESPONSE" | grep -q '"code":-32602' && \
+   ! echo "$INVALID_PARAMS_RESPONSE" | grep -q 'Missing required parameter'; then
+  echo -e "${GREEN}PASS${NC}"
+else
+  echo -e "${RED}FAIL${NC}"
+  echo "Status: $INVALID_PARAMS_STATUS"
+  echo "Response: $INVALID_PARAMS_RESPONSE"
+  exit 1
+fi
+
+echo -n "Test 12: HTTP MCP clamps list_recent limit to a safe minimum... "
+LIST_RECENT_RESULT=$(mcp_post '{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "tools/call",
+  "params": {
+    "name": "list_recent",
+    "arguments": {
+      "limit": 0
+    }
+  }
+}')
+LIST_RECENT_COUNT=$(printf '%s' "$LIST_RECENT_RESULT" | extract_mcp_text_count)
+if [ "$LIST_RECENT_COUNT" -ge 1 ] && [ "$LIST_RECENT_COUNT" -le 25 ]; then
+  echo -e "${GREEN}PASS${NC}"
+else
+  echo -e "${RED}FAIL${NC}"
+  echo "Response: $LIST_RECENT_RESULT"
+  exit 1
+fi
+
+echo -n "Test 13: Filtered semantic search works through MCP HTTP... "
+FILTERED_SEARCH_RESULT=$(mcp_post '{
+  "jsonrpc": "2.0",
+  "id": 6,
+  "method": "tools/call",
+  "params": {
+    "name": "semantic_search_filtered",
+    "arguments": {
+      "query": "deployment checklist",
+      "limit": 5,
+      "filters": {
+        "people": ["Marcus"],
+        "topics": ["container security"]
+      }
+    }
+  }
+}')
 
 if echo "$FILTERED_SEARCH_RESULT" | grep -q 'Marcus' && \
    echo "$FILTERED_SEARCH_RESULT" | grep -q 'container security'; then
@@ -204,18 +315,16 @@ else
   exit 1
 fi
 
-echo -n "Test 9: Metadata statistics tool returns aggregate data... "
-METADATA_STATS_RESULT=$(curl -fsS -X POST "$MCP_HTTP_URL" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 3,
-    "method": "tools/call",
-    "params": {
-      "name": "get_metadata_stats",
-      "arguments": {}
-    }
-  }')
+echo -n "Test 14: Metadata statistics tool returns aggregate data... "
+METADATA_STATS_RESULT=$(mcp_post '{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "method": "tools/call",
+  "params": {
+    "name": "get_metadata_stats",
+    "arguments": {}
+  }
+}')
 
 if echo "$METADATA_STATS_RESULT" | grep -q 'unique_people' && \
    echo "$METADATA_STATS_RESULT" | grep -q 'Marcus'; then
@@ -226,16 +335,15 @@ else
   exit 1
 fi
 
-echo ""
-echo "✅ Test suite complete"
-echo ""
-echo "📊 Database stats:"
+printf '\nTest suite complete\n\n'
+printf 'Database stats:\n'
 docker exec openbrain-db psql -U postgres -d openbrain -c "SELECT COUNT(*) AS total_thoughts FROM thoughts;" 2>/dev/null || \
   echo "  (Run manually: docker exec openbrain-db psql -U postgres -d openbrain -c 'SELECT COUNT(*) AS total_thoughts FROM thoughts;')"
 
-echo ""
-echo "🔧 Manual MCP stdio test:"
-echo "   docker exec -i openbrain-mcp-server node /app/index.js"
-echo ""
-echo "   Then send:"
-echo '   {"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+printf '\nManual MCP stdio test:\n'
+printf '   docker exec -i openbrain-mcp-server node /app/index.js\n\n'
+printf '   Then send:\n'
+printf '   {"jsonrpc":"2.0","id":1,"method":"tools/list"}\n'
+
+printf '\nManual MCP HTTP test:\n'
+printf '   curl -X POST %s -H "Content-Type: application/json" -H "X-MCP-Key: %s" -d '\''{"jsonrpc":"2.0","id":1,"method":"tools/list"}'\''\n' "$MCP_HTTP_URL" '$MCP_API_KEY'
