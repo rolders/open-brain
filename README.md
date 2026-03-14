@@ -50,6 +50,23 @@ The ingestion worker stores document chunks with:
 
 This improves large-document retrieval by searching semantically meaningful chunks instead of monolithic full-file entries.
 
+## Two-stage retrieval + hybrid ranking
+
+Semantic search now uses two stages:
+1. Candidate retrieval over workspace-scoped vectors
+2. Hybrid reranking combining:
+   - vector similarity
+   - recency weight
+   - entity match bonus
+   - importance score
+   - confidence score
+
+In this environment, `ivfflat` cannot be created for 3072-d embeddings, so the system keeps the two-stage pipeline and runs `ANALYZE` for planner freshness:
+
+```bash
+scripts/reindex-vectors.sh
+```
+
 ## Image version policy
 
 Core runtime images are pinned for reproducibility:

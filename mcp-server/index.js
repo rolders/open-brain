@@ -187,7 +187,7 @@ async function createQueryEmbedding(query) {
   return `[${embeddingResponse.data[0].embedding.join(',')}]`;
 }
 
-function buildMetadataFilterClause(filters = {}, startingIndex = 4) {
+function buildMetadataFilterClause(filters = {}, startingIndex = 5) {
   const conditions = ['embedding IS NOT NULL', 'workspace_id = $3'];
   const values = [];
   let nextIndex = startingIndex;
@@ -234,21 +234,47 @@ async function runSemanticSearch(query, limit = 10, filters = null, workspaceId 
   }
 
   const embeddingString = await createQueryEmbedding(query);
-  const values = [embeddingString, limit, workspaceId];
+  const candidateLimit = Math.max(50, Math.min(500, limit * 8));
+  const values = [embeddingString, limit, workspaceId, candidateLimit];
   let whereClause = 'embedding IS NOT NULL AND workspace_id = $3';
 
   if (filters) {
-    const filterQuery = buildMetadataFilterClause(filters, 4);
+    const filterQuery = buildMetadataFilterClause(filters, 5);
     whereClause = filterQuery.whereClause;
     values.push(...filterQuery.values);
   }
 
   const result = await pool.query(
-    `SELECT id, tenant_id, workspace_id, content, metadata, created_at,
-            1 - (embedding <=> $1::vector) AS similarity
-     FROM thoughts
-     WHERE ${whereClause}
-     ORDER BY embedding <=> $1::vector
+    `WITH candidates AS (
+       SELECT id, tenant_id, workspace_id, content, metadata, created_at,
+              1 - (embedding <=> $1::vector) AS vector_similarity
+       FROM thoughts
+       WHERE ${whereClause}
+       ORDER BY embedding <=> $1::vector
+       LIMIT $4
+     ), scored AS (
+       SELECT *,
+              EXP(-GREATEST(EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400.0, 0) / 30.0) AS recency_weight,
+              CASE WHEN metadata ? 'extracted' THEN 1.0 ELSE 0.0 END AS entity_match_bonus,
+              LEAST(1.0, GREATEST(0.0, COALESCE((metadata->>'importance_score')::double precision, 0.5))) AS importance_score,
+              LEAST(1.0, GREATEST(0.0, COALESCE((metadata->>'confidence_score')::double precision, 0.5))) AS confidence_score
+       FROM candidates
+     )
+     SELECT id, tenant_id, workspace_id, content, metadata, created_at,
+            vector_similarity AS similarity,
+            recency_weight,
+            entity_match_bonus,
+            importance_score,
+            confidence_score,
+            (
+              vector_similarity * 0.65 +
+              recency_weight * 0.15 +
+              entity_match_bonus * 0.10 +
+              importance_score * 0.05 +
+              confidence_score * 0.05
+            ) AS hybrid_score
+     FROM scored
+     ORDER BY hybrid_score DESC, similarity DESC
      LIMIT $2`,
     values
   );
