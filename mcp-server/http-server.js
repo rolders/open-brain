@@ -42,16 +42,117 @@ const openai = OPENAI_API_KEY ? new OpenAI({
 const app = express();
 app.use(express.json());
 
+// MCP Server metadata
+const SERVER_INFO = {
+  name: 'openbrain-mcp-server',
+  version: '1.0.0',
+  description: 'Open Brain memory system - persistent memory with semantic search',
+  author: 'Open Brain',
+  homepage: 'https://github.com/rolders/open-brain',
+};
+
+// MCP Tools schema
+const TOOLS = [
+  {
+    name: 'semantic_search',
+    description: 'Search your memory using semantic similarity to find related thoughts',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'The search query to find semantically similar thoughts'
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum number of results to return (default: 10)',
+          default: 10
+        }
+      },
+      required: ['query']
+    }
+  },
+  {
+    name: 'list_recent',
+    description: 'Get the most recent thoughts from your memory',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: {
+          type: 'number',
+          description: 'Maximum number of recent thoughts to return (default: 20)',
+          default: 20
+        }
+      }
+    }
+  },
+  {
+    name: 'get_stats',
+    description: 'Get statistics about your memory (total thoughts, latest thought, etc.)',
+    inputSchema: {
+      type: 'object',
+      properties: {}
+    }
+  }
+];
+
 // Health check
 app.get('/health', (req, res) => {
-  res.json({ status: 'healthy' });
+  res.json({ status: 'healthy', server: SERVER_INFO });
 });
 
-// MCP endpoint for Telegram bot
+// SSE endpoint for real-time updates (optional, for future use)
+app.get('/sse', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  // Send initial server info
+  res.write(`event: endpoint\n`);
+  res.write(`data: ${JSON.stringify({ endpoint: '/mcp' })}\n\n`);
+
+  // Keep connection alive
+  const heartbeat = setInterval(() => {
+    res.write(`: keepalive\n\n`);
+  }, 15000);
+
+  req.on('close', () => {
+    clearInterval(heartbeat);
+  });
+});
+
+// Main MCP endpoint
 app.post('/mcp', async (req, res) => {
   try {
-    const { method, params } = req.body;
+    const { method, params, id } = req.body;
 
+    // Handle initialize method
+    if (method === 'initialize') {
+      return res.json({
+        jsonrpc: '2.0',
+        result: {
+          protocolVersion: '2024-11-05',
+          serverInfo: SERVER_INFO,
+          capabilities: {
+            tools: {}
+          }
+        },
+        id: id || Date.now()
+      });
+    }
+
+    // Handle tools/list method
+    if (method === 'tools/list') {
+      return res.json({
+        jsonrpc: '2.0',
+        result: {
+          tools: TOOLS
+        },
+        id: id || Date.now()
+      });
+    }
+
+    // Handle tools/call method
     if (method === 'tools/call') {
       const { name, arguments: args } = params;
 
@@ -142,18 +243,34 @@ app.post('/mcp', async (req, res) => {
           throw new Error(`Unknown tool: ${name}`);
       }
 
-      res.json({
+      return res.json({
         jsonrpc: '2.0',
         result,
-        id: req.body.id || Date.now(),
+        id: id || Date.now(),
       });
-    } else {
-      res.status(400).json({ error: 'Unsupported method' });
     }
+
+    // Unknown method
+    return res.status(400).json({
+      jsonrpc: '2.0',
+      error: {
+        code: -32601,
+        message: `Method not found: ${method}`,
+        data: { availableMethods: ['initialize', 'tools/list', 'tools/call'] }
+      },
+      id: id || Date.now()
+    });
+
   } catch (error) {
     console.error('Error processing MCP request:', error);
     res.status(500).json({
-      error: error.message,
+      jsonrpc: '2.0',
+      error: {
+        code: -32603,
+        message: 'Internal error',
+        data: error.message
+      },
+      id: req.body.id || Date.now()
     });
   }
 });
@@ -186,6 +303,8 @@ async function main() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`MCP HTTP server listening on port ${PORT}`);
+    console.log(`Server info: ${SERVER_INFO.name} v${SERVER_INFO.version}`);
+    console.log(`Available tools: ${TOOLS.map(t => t.name).join(', ')}`);
   });
 }
 
