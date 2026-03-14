@@ -1,6 +1,8 @@
 # Open Brain
 
-Open Brain is a local Docker-based memory system for AI agents. It stores thoughts and extracted document text in PostgreSQL with `pgvector`, writes through a capture API, and exposes read access through MCP.
+Open Brain is a local Docker-based memory system for AI agents. It stores thoughts and extracted document text in PostgreSQL with `pgvector`, writes through a capture API, and exposes read access through MCP. 
+
+Inspired by Nate here https://www.youtube.com/watch?v=2JiMmye2ezg
 
 Related docs:
 - [MCP_CONNECTION_GUIDE.md](MCP_CONNECTION_GUIDE.md)
