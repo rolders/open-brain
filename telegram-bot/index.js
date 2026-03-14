@@ -31,24 +31,27 @@ const api = axios.create({
   }
 });
 
-// Helper function to escape markdown special characters
-// Only escapes characters that would break markdown parsing
-function escapeMarkdown(text) {
-  if (!text) return '';
-  // Remove existing backslashes first to avoid double-escaping
-  let cleaned = text.replace(/\\_/g, '_').replace(/\\*/g, '*').replace(/\\[/g, '[').replace(/\\]/g, ']');
-  // Then escape only the characters that would break markdown
-  return cleaned.replace(/[*_\[\]()~`>#+=|{}.!\\-]/g, '\\$&');
-}
-
-// Helper function to clean text for display (removes HTML entities)
+// Helper function to clean OCR text and decode HTML entities
 function cleanText(text) {
   if (!text) return '';
   return text
-    .replace(/\\n/g, ' ')  // Replace literal \n with space
-    .replace(/\\t/g, ' ')  // Replace literal \t with space
-    .replace(/\s+/g, ' ')  // Replace multiple whitespace with single space
+    .replace(/\\n/g, ' ')      // Replace literal \n with space
+    .replace(/\\t/g, ' ')      // Replace literal \t with space
+    .replace(/\\"/g, '"')      // Replace escaped quotes
+    .replace(/\\'/g, "'")      // Replace escaped apostrophes
+    .replace(/\\</g, '<')      // Replace escaped <
+    .replace(/\\>/g, '>')      // Replace escaped >
+    .replace(/\\\\/g, '\\')    // Replace double backslashes
+    .replace(/\s+/g, ' ')      // Replace multiple whitespace with single space
     .trim();
+}
+
+// Helper function to escape markdown special characters
+// Must be called AFTER cleanText to avoid double-escaping
+function escapeMarkdown(text) {
+  if (!text) return '';
+  // Only escape the main markdown special characters
+  return text.replace(/[*_\[\]()~`>#+=|{}.!\\-]/g, '\\$&');
 }
 
 // Helper function to format file size
@@ -201,12 +204,12 @@ bot.onText(/\/search (.+)/, async (msg, match) => {
       return;
     }
 
-    let searchResults = `🔍 *Search Results: "${escapeMarkdown(query)}"*\n\n`;
+    let searchResults = `🔍 *Search Results: "${query}"*\n\n`;
 
     result.thoughts.forEach((thought, index) => {
       const similarity = Math.round(thought.similarity * 100);
       const preview = cleanText(thought.content);
-      const truncatedPreview = preview.substring(0, 150) + (preview.length > 150 ? '...' : '');
+      const truncatedPreview = preview.substring(0, 200) + (preview.length > 200 ? '...' : '');
 
       // Add file info if available
       let fileInfo = '';
@@ -214,7 +217,7 @@ bot.onText(/\/search (.+)/, async (msg, match) => {
         fileInfo = `\n   📄 ${thought.metadata.filename}`;
       }
 
-      searchResults += `${index + 1}. *${similarity}% match*${fileInfo}\n${escapeMarkdown(truncatedPreview)}\n\n`;
+      searchResults += `${index + 1}. *${similarity}% match*${fileInfo}\n${truncatedPreview}\n\n`;
     });
 
     bot.sendMessage(chatId, searchResults, { parse_mode: 'Markdown' });
@@ -260,7 +263,7 @@ bot.onText(/\/recent(?: (\d+))?/, async (msg, match) => {
     result.thoughts.forEach((thought, index) => {
       const date = new Date(thought.created_at).toLocaleDateString();
       const preview = cleanText(thought.content);
-      const truncatedPreview = preview.substring(0, 80) + (preview.length > 80 ? '...' : '');
+      const truncatedPreview = preview.substring(0, 100) + (preview.length > 100 ? '...' : '');
 
       // Add file info if available
       let fileInfo = '';
@@ -273,7 +276,7 @@ bot.onText(/\/recent(?: (\d+))?/, async (msg, match) => {
         }
       }
 
-      recentMessage += `${index + 1}. ${escapeMarkdown(truncatedPreview)}\n   📅 ${date}${fileInfo}\n\n`;
+      recentMessage += `${index + 1}. ${truncatedPreview}\n   📅 ${date}${fileInfo}\n\n`;
     });
 
     bot.sendMessage(chatId, recentMessage, { parse_mode: 'Markdown' });
@@ -364,12 +367,12 @@ bot.on('document', async (msg) => {
     const successMessage = `
 ✅ *Document Processed Successfully!*
 
-📄 *File:* ${escapeMarkdown(result.original_filename)}
+📄 *File:* ${result.original_filename}
 📏 *Size:* ${formatFileSize(result.file_size)}
 📝 *Content Length:* ${result.full_content_length} characters
 🆔 *Thought ID:* ${result.id}
 
-Preview: ${escapeMarkdown(result.content.substring(0, 150))}${result.content.length > 150 ? '...' : ''}
+Preview: ${cleanText(result.content).substring(0, 200)}${result.content.length > 200 ? '...' : ''}
     `.trim();
 
     bot.sendMessage(chatId, successMessage, { parse_mode: 'Markdown' });
@@ -425,12 +428,12 @@ bot.on('photo', async (msg) => {
     const successMessage = `
 ✅ *Image Processed Successfully!*
 
-🖼️ *File:* ${escapeMarkdown(result.original_filename)}
+🖼️ *File:* ${result.original_filename}
 📏 *Size:* ${formatFileSize(result.file_size)}
 📝 *Extracted Text:* ${result.full_content_length} characters
 🆔 *Thought ID:* ${result.id}
 
-Preview: ${escapeMarkdown(result.content.substring(0, 150))}${result.content.length > 150 ? '...' : ''}
+Preview: ${cleanText(result.content).substring(0, 200)}${result.content.length > 200 ? '...' : ''}
     `.trim();
 
     bot.sendMessage(chatId, successMessage, { parse_mode: 'Markdown' });
