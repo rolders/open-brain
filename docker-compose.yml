@@ -74,6 +74,43 @@ services:
       - capture-api
     restart: unless-stopped
 
+  telegram-bot:
+    build:
+      context: ./telegram-bot
+      dockerfile: Dockerfile
+    container_name: openbrain-telegram-bot
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      OPENBRAIN_API_KEY: ${OPENBRAIN_API_KEY}
+      CAPTURE_API_URL: http://capture-api:3000
+    depends_on:
+      - capture-api
+      - mcp-server
+    networks:
+      - brain_net
+    restart: unless-stopped
+
+  mcp-server-http:
+    build:
+      context: ./mcp-server
+      dockerfile: Dockerfile
+    container_name: openbrain-mcp-server-http
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: openbrain
+      DB_USER: brain_reader
+      DB_PASSWORD: ${DB_PASSWORD}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      MCP_MODE: http-server.js
+      PORT: 3000
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - brain_net
+    restart: unless-stopped
+
 networks:
   brain_net:
     driver: bridge

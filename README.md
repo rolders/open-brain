@@ -27,8 +27,8 @@ A production-hardened, local Docker environment for a persistent memory system u
 - **Vector Embeddings**: OpenAI text-embedding-3-large (3072 dimensions) stored in PostgreSQL with pgvector
 - **Semantic Search**: Cosine similarity search for finding semantically related thoughts
 - **Security**: Principle of least privilege with separate database roles (brain_writer, brain_reader)
-- **Rate Limiting**: Built-in rate limiting via Caddy reverse proxy
 - **MCP Protocol**: Standard Model Context Protocol for seamless AI agent integration
+- **Telegram Bot**: Capture and search thoughts via Telegram (see [TELEGRAM_SETUP.md](TELEGRAM_SETUP.md))
 - **Production Ready**: Health checks, graceful shutdowns, connection pooling
 
 ## Prerequisites
@@ -208,6 +208,44 @@ Add to your Claude Desktop config file:
 3. Add new server:
    - Name: `openbrain`
    - Command: `docker exec -i openbrain-mcp-server node /app/index.js`
+
+## Telegram Bot Integration
+
+Capture and search your thoughts directly from Telegram! 📱
+
+### Quick Setup
+
+1. **Create a Telegram Bot**:
+   - Message @BotFather on Telegram: `/newbot`
+   - Follow prompts and copy your bot token
+
+2. **Configure Environment**:
+   ```bash
+   # Add to .env
+   TELEGRAM_BOT_TOKEN=your_bot_token_here
+   ```
+
+3. **Start the Bot**:
+   ```bash
+   docker compose build telegram-bot mcp-server-http
+   docker compose up -d telegram-bot mcp-server-http
+   ```
+
+4. **Start Using**:
+   - Open Telegram and search for your bot
+   - Send `/start` to begin
+
+### Available Commands
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `/start` | Initialize bot | `/start` |
+| `/capture <text>` | Store a thought | `/capture Docker containers are lightweight` |
+| `/search <query>` | Semantic search | `/search database technology` |
+| `/recent [limit]` | Show recent thoughts | `/recent 10` |
+| `/stats` | Show statistics | `/stats` |
+
+**Full documentation**: See [TELEGRAM_SETUP.md](TELEGRAM_SETUP.md)
 
 ## API Endpoints
 
