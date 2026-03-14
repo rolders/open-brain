@@ -1,0 +1,15 @@
+{
+  "name": "openbrain-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP server for Open Brain memory system",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^0.4.0",
+    "pg": "^8.11.3",
+    "openai": "^4.20.0"
+  }
+}

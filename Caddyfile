@@ -1,0 +1,17 @@
+:8080 {
+    # Health check endpoint
+    handle /health {
+        respond "OK" 200
+    }
+
+    # Proxy to capture-api
+    handle /* {
+        reverse_proxy capture-api:3000
+    }
+
+    # Access logs
+    log {
+        output file /var/log/caddy/access.log
+        format json
+    }
+}

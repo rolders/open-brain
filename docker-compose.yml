@@ -1,0 +1,84 @@
+services:
+  db:
+    image: ankane/pgvector:latest
+    container_name: openbrain-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: openbrain
+    volumes:
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - brain_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  capture-api:
+    build:
+      context: ./capture-api
+      dockerfile: Dockerfile
+    container_name: openbrain-capture-api
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: openbrain
+      DB_USER: brain_writer
+      DB_PASSWORD: ${DB_PASSWORD}
+      OPENBRAIN_API_KEY: ${OPENBRAIN_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      PORT: 3000
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - brain_net
+    restart: unless-stopped
+
+  mcp-server:
+    build:
+      context: ./mcp-server
+      dockerfile: Dockerfile
+    container_name: openbrain-mcp-server
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: openbrain
+      DB_USER: brain_reader
+      DB_PASSWORD: ${DB_PASSWORD}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - brain_net
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+
+  caddy:
+    image: caddy:latest
+    container_name: openbrain-caddy
+    ports:
+      - "8888:8080"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - brain_net
+    depends_on:
+      - capture-api
+    restart: unless-stopped
+
+networks:
+  brain_net:
+    driver: bridge
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,14 @@
+{
+  "name": "openbrain-capture-api",
+  "version": "1.0.0",
+  "description": "Capture API for Open Brain memory system",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "fastify": "^4.25.0",
+    "pg": "^8.11.3",
+    "openai": "^4.20.0"
+  }
+}
