@@ -95,6 +95,7 @@ services:
       context: ./mcp-server
       dockerfile: Dockerfile
     container_name: openbrain-mcp-server-http
+    command: ["node", "http-server.js"]
     environment:
       DB_HOST: db
       DB_PORT: 5432
@@ -102,8 +103,9 @@ services:
       DB_USER: brain_reader
       DB_PASSWORD: ${DB_PASSWORD}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
-      MCP_MODE: http-server.js
       PORT: 3000
+    ports:
+      - "3000:3000"
     depends_on:
       db:
         condition: service_healthy
