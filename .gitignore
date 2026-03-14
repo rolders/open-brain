@@ -24,3 +24,6 @@ Thumbs.db
 
 # Generated secrets/bootstrap artifacts
 .generated/
+
+# Local git worktrees
+.worktrees/
