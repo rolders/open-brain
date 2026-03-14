@@ -35,14 +35,28 @@ Then restart the relevant services:
 docker compose restart capture-api telegram-bot
 ```
 
-## Upload API
+## Upload API (asynchronous)
 
-Use the authenticated `/upload` endpoint:
+`/upload` now enqueues an ingestion job and returns immediately with `job_id`:
 
 ```bash
 curl -X POST http://localhost:8888/upload \
   -H "X-OpenBrain-Key: $OPENBRAIN_API_KEY" \
   -F "file=@/path/to/document.pdf"
+```
+
+Check job status:
+
+```bash
+curl -X GET http://localhost:8888/ingestion/jobs/<job_id> \
+  -H "X-OpenBrain-Key: $OPENBRAIN_API_KEY"
+```
+
+Retry failed job:
+
+```bash
+curl -X POST http://localhost:8888/ingestion/jobs/<job_id>/retry \
+  -H "X-OpenBrain-Key: $OPENBRAIN_API_KEY"
 ```
 
 ## Telegram uploads

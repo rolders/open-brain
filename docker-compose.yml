@@ -39,6 +39,27 @@ services:
       - brain_net
     restart: unless-stopped
 
+  ingestion-worker:
+    build:
+      context: ./capture-api
+      dockerfile: Dockerfile
+    container_name: openbrain-ingestion-worker
+    command: ["node", "ingestion-worker.js"]
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: openbrain
+      DB_USER: brain_writer
+      DB_PASSWORD: ${BRAIN_WRITER_PASSWORD}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ZAI_API_KEY: ${ZAI_API_KEY}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - brain_net
+    restart: unless-stopped
+
   mcp-server:
     build:
       context: ./mcp-server

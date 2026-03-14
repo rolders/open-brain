@@ -77,6 +77,7 @@ check_required_file init.sql
 check_required_file docker-compose.yml
 check_required_file Caddyfile
 check_required_file capture-api/index.js
+check_required_file capture-api/ingestion-worker.js
 check_required_file mcp-server/index.js
 check_required_file mcp-server/http-server.js
 check_required_file test.sh
@@ -138,6 +139,12 @@ if grep -q 'DB_PASSWORD: ${BRAIN_WRITER_PASSWORD}' docker-compose.yml; then
     pass "capture-api uses BRAIN_WRITER_PASSWORD"
 else
     fail "capture-api is not wired to BRAIN_WRITER_PASSWORD"
+fi
+
+if grep -q 'container_name: openbrain-ingestion-worker' docker-compose.yml && grep -q 'command: \["node", "ingestion-worker.js"\]' docker-compose.yml; then
+    pass "ingestion-worker service configured"
+else
+    fail "ingestion-worker service is missing or misconfigured"
 fi
 
 if grep -q 'DB_PASSWORD: ${BRAIN_READER_PASSWORD}' docker-compose.yml; then
@@ -224,7 +231,7 @@ if [ "$ERRORS" -eq 0 ]; then
     echo -e "${GREEN}Validation passed with ${WARNINGS} warning(s).${NC}"
     echo
     echo "Recommended next steps:"
-    echo "  docker compose up -d db capture-api mcp-server caddy"
+    echo "  docker compose up -d db capture-api ingestion-worker mcp-server caddy"
     echo "  docker compose up -d mcp-server-http    # optional HTTP MCP"
     echo "  ./test.sh"
     exit 0

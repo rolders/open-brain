@@ -26,6 +26,21 @@ CREATE INDEX idx_thoughts_workspace_created_at ON thoughts (workspace_id, create
 CREATE INDEX idx_thoughts_workspace_source_hash ON thoughts (workspace_id, source_hash);
 CREATE INDEX idx_thoughts_workspace_content_hash ON thoughts (workspace_id, content_hash);
 
+CREATE TABLE ingestion_jobs (
+    id BIGSERIAL PRIMARY KEY,
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    status TEXT NOT NULL DEFAULT 'queued',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    payload JSONB NOT NULL,
+    result JSONB DEFAULT '{}'::jsonb,
+    error TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_ingestion_jobs_status_created_at ON ingestion_jobs (status, created_at);
+CREATE INDEX idx_ingestion_jobs_workspace_created_at ON ingestion_jobs (workspace_id, created_at DESC);
+
 -- Note: HNSW index is not supported for 3072-dimension vectors in this setup.
 -- Semantic search uses a sequential cosine-distance scan.
 
@@ -35,4 +50,6 @@ CREATE USER brain_reader WITH PASSWORD '__BRAIN_READER_PASSWORD__';
 
 GRANT INSERT, SELECT ON thoughts TO brain_writer;
 GRANT USAGE, SELECT ON SEQUENCE thoughts_id_seq TO brain_writer;
+GRANT INSERT, SELECT, UPDATE ON ingestion_jobs TO brain_writer;
+GRANT USAGE, SELECT ON SEQUENCE ingestion_jobs_id_seq TO brain_writer;
 GRANT SELECT ON thoughts TO brain_reader;

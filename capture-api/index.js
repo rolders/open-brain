@@ -271,6 +271,17 @@ async function saveThoughtWithDedupe({
   };
 }
 
+async function enqueueIngestionJob({ workspaceId, payload }) {
+  const result = await pool.query(
+    `INSERT INTO ingestion_jobs (workspace_id, payload)
+     VALUES ($1, $2::jsonb)
+     RETURNING id, workspace_id, status, attempt_count, created_at, updated_at`,
+    [workspaceId, JSON.stringify(payload)],
+  );
+
+  return result.rows[0];
+}
+
 fastify.setErrorHandler((error, request, reply) => {
   if (reply.sent) {
     return;
@@ -390,6 +401,11 @@ If no items of a type are found, return an empty array for that type. Be conserv
 
 // Helper: Extract text from file based on type
 // Returns: { content, fileSize }
+function isSupportedUploadExtension(filename) {
+  const ext = path.extname(filename).toLowerCase();
+  return ['.txt', '.md', '.pdf', '.docx', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'].includes(ext);
+}
+
 async function extractTextFromFile(file, filename) {
   const ext = path.extname(filename).toLowerCase();
   const buffer = await fileToBuffer(file);
@@ -586,7 +602,7 @@ fastify.post('/capture', {
   }
 });
 
-// File upload endpoint (new)
+// File upload endpoint (async job enqueue)
 fastify.post('/upload', {
   preHandler: validateApiKey
 }, async (request, reply) => {
@@ -603,80 +619,113 @@ fastify.post('/upload', {
     const mimetype = data.mimetype;
     const clientMetadata = parseMultipartMetadata(data.fields || {});
 
-    fastify.log.info(`Processing file upload: ${filename} (${mimetype})`);
-
-    // Extract text from file
-    const extractionResult = await extractTextFromFile(file, filename);
-    const { content, fileSize } = extractionResult;
-
-    // Validate extracted content
-    if (!content || content.trim().length === 0) {
-      reply.code(400).send({ error: 'No text content found in file' });
+    if (!isSupportedUploadExtension(filename)) {
+      reply.code(400).send({ error: 'Unsupported file type' });
       return;
     }
 
-    enforceContentLength(content, MAX_EXTRACTED_CONTENT_CHARS, 'Extracted content');
+    const buffer = await fileToBuffer(file);
+    const fileSize = buffer.length;
 
-    // Generate metadata
-    const metadata = buildUploadMetadata(filename, mimetype, fileSize, clientMetadata);
-
-    // Extract intelligent metadata using GPT-4o
-    const enhancedMetadata = await extractMetadata(content, metadata);
-
-    if (enhancedMetadata.extracted) {
-      const { people, topics, action_items } = enhancedMetadata.extracted;
-      fastify.log.info(`Extracted ${people.length} people, ${topics.length} topics, ${action_items.length} action items from file`);
-    }
-
-    // Generate embedding using OpenAI
-    const embeddingResponse = await openai.embeddings.create({
-      model: 'text-embedding-3-large',
-      input: content,
-      dimensions: 3072,
-    });
-
-    const embedding = embeddingResponse.data[0].embedding;
-
-    const scope = deriveScopeAndProvenance(enhancedMetadata, {
+    const scope = deriveScopeAndProvenance(clientMetadata, {
       source_type: 'file_upload',
       captured_via: 'upload'
     });
 
-    const result = await saveThoughtWithDedupe({
-      scope,
-      content,
-      metadata: enhancedMetadata,
-      embedding,
-      originalFilename: filename,
-      fileType: path.extname(filename).toLowerCase(),
-      fileSize,
-      sourceContext: `${filename}:${fileSize}`,
+    const job = await enqueueIngestionJob({
+      workspaceId: scope.workspace_id,
+      payload: {
+        filename,
+        mimetype,
+        file_size: fileSize,
+        file_base64: buffer.toString('base64'),
+        metadata: {
+          ...clientMetadata,
+          tenant_id: scope.tenant_id,
+          workspace_id: scope.workspace_id,
+          agent_id: scope.agent_id,
+          source_type: scope.source_type,
+          source_uri: scope.source_uri,
+          source_hash: scope.source_hash,
+          captured_via: scope.captured_via,
+          captured_by: scope.captured_by,
+        },
+      },
     });
-
-    const { id, created_at, tenant_id, workspace_id, deduplicated, content_hash, source_hash } = result;
-
-    fastify.log.info(`Successfully processed file: ${filename} -> thought ID: ${id}`);
 
     return {
       success: true,
       data: {
-        id,
-        tenant_id,
-        workspace_id,
-        deduplicated,
-        content_hash,
-        source_hash,
-        content: content.substring(0, 500) + (content.length > 500 ? '...' : ''),
-        full_content_length: content.length,
-        metadata: enhancedMetadata,
-        original_filename: filename,
-        file_type: path.extname(filename).toLowerCase(),
-        file_size: fileSize,
-        created_at
+        job_id: job.id,
+        workspace_id: job.workspace_id,
+        status: job.status,
+        attempt_count: job.attempt_count,
+        created_at: job.created_at,
       }
     };
   } catch (error) {
-    fastify.log.error({ err: error }, 'Error processing file upload');
+    fastify.log.error({ err: error }, 'Error queueing file upload');
+    sendClientError(reply, error);
+  }
+});
+
+fastify.get('/ingestion/jobs/:id', {
+  preHandler: validateApiKey
+}, async (request, reply) => {
+  const id = Number.parseInt(request.params.id, 10);
+
+  if (!Number.isFinite(id) || id <= 0) {
+    reply.code(400).send({ error: 'Invalid job id' });
+    return;
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT id, workspace_id, status, attempt_count, result, error, created_at, updated_at
+       FROM ingestion_jobs
+       WHERE id = $1`,
+      [id],
+    );
+
+    if (result.rows.length === 0) {
+      reply.code(404).send({ error: 'Job not found' });
+      return;
+    }
+
+    return { success: true, data: result.rows[0] };
+  } catch (error) {
+    fastify.log.error({ err: error, jobId: id }, 'Error reading ingestion job status');
+    sendClientError(reply, error);
+  }
+});
+
+fastify.post('/ingestion/jobs/:id/retry', {
+  preHandler: validateApiKey
+}, async (request, reply) => {
+  const id = Number.parseInt(request.params.id, 10);
+
+  if (!Number.isFinite(id) || id <= 0) {
+    reply.code(400).send({ error: 'Invalid job id' });
+    return;
+  }
+
+  try {
+    const updateResult = await pool.query(
+      `UPDATE ingestion_jobs
+       SET status = 'queued', error = NULL, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1 AND status = 'failed'
+       RETURNING id, workspace_id, status, attempt_count, created_at, updated_at`,
+      [id],
+    );
+
+    if (updateResult.rows.length === 0) {
+      reply.code(409).send({ error: 'Job is not in failed state' });
+      return;
+    }
+
+    return { success: true, data: updateResult.rows[0] };
+  } catch (error) {
+    fastify.log.error({ err: error, jobId: id }, 'Error retrying ingestion job');
     sendClientError(reply, error);
   }
 });

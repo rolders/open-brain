@@ -14,6 +14,7 @@ Related docs:
 Core services:
 - `db`: PostgreSQL with `pgvector`
 - `capture-api`: authenticated write API
+- `ingestion-worker`: asynchronous file ingestion worker
 - `mcp-server`: stdio MCP server
 - `caddy`: reverse proxy for the capture API on `http://localhost:8888`
 
@@ -174,7 +175,7 @@ Use this if you can discard the current database:
 ```bash
 docker compose down -v
 ./setup.sh
-docker compose up -d db capture-api mcp-server caddy
+docker compose up -d db capture-api ingestion-worker mcp-server caddy
 ```
 
 ### Option B: Rotate passwords in the existing database
@@ -216,6 +217,21 @@ curl -X POST http://localhost:8888/capture \
     "content": "Docker containers are lightweight application environments.",
     "metadata": {"source": "manual"}
   }'
+```
+
+### Upload a file (async)
+
+```bash
+curl -X POST http://localhost:8888/upload \
+  -H "X-OpenBrain-Key: $OPENBRAIN_API_KEY" \
+  -F "file=@/path/to/document.pdf"
+```
+
+Check job status:
+
+```bash
+curl -X GET http://localhost:8888/ingestion/jobs/<job_id> \
+  -H "X-OpenBrain-Key: $OPENBRAIN_API_KEY"
 ```
 
 ### Health check

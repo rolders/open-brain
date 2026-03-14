@@ -1,6 +1,6 @@
 #!/bin/bash
 # Open Brain Test Script
-# Run this after: docker compose up -d db capture-api mcp-server caddy
+# Run this after: docker compose up -d db capture-api ingestion-worker mcp-server caddy
 
 set -euo pipefail
 
@@ -51,6 +51,15 @@ ensure_mcp_http_running() {
   fi
 }
 
+ensure_ingestion_worker_running() {
+  echo -e "${YELLOW}INFO${NC} Ensuring ingestion-worker is running for async upload checks..."
+
+  if ! docker compose up -d --build --force-recreate ingestion-worker > /dev/null; then
+    echo -e "${RED}FAIL${NC} Unable to start ingestion-worker service"
+    exit 1
+  fi
+}
+
 wait_for_capture_api() {
   echo -e "${YELLOW}INFO${NC} Waiting for Capture API behind Caddy to become ready..."
 
@@ -94,6 +103,7 @@ extract_mcp_text_count() {
 }
 
 wait_for_capture_api
+ensure_ingestion_worker_running
 
 echo -n "Test 1: Caddy health endpoint on port 8888... "
 HEALTH=$(curl -fsS "$API_BASE_URL/health")
@@ -182,7 +192,7 @@ else
   exit 1
 fi
 
-echo -n "Test 6: File upload stores extracted content and metadata... "
+echo -n "Test 6: File upload enqueues job and worker completes it... "
 UPLOAD_FIXTURE=$(mktemp /tmp/openbrain-upload-XXXXXX.txt)
 printf '%s\n' 'Meeting notes: Priya decided the release topic is container security. Marcus will prepare the deployment checklist and follow up tomorrow.' > "$UPLOAD_FIXTURE"
 
@@ -191,12 +201,37 @@ UPLOAD_RESULT=$(curl -fsS -X POST "$API_BASE_URL/upload" \
   -F "file=@$UPLOAD_FIXTURE")
 rm -f "$UPLOAD_FIXTURE"
 
-if echo "$UPLOAD_RESULT" | grep -q '"success":true' && \
-   echo "$UPLOAD_RESULT" | grep -q '"original_filename"'; then
+UPLOAD_JOB_ID=$(echo "$UPLOAD_RESULT" | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["job_id"])' 2>/dev/null || true)
+if [ -z "$UPLOAD_JOB_ID" ]; then
+  echo -e "${RED}FAIL${NC}"
+  echo "Response: $UPLOAD_RESULT"
+  exit 1
+fi
+
+JOB_STATUS=""
+for _ in $(seq 1 40); do
+  JOB_RESULT=$(curl -fsS -X GET "$API_BASE_URL/ingestion/jobs/$UPLOAD_JOB_ID" \
+    -H "X-OpenBrain-Key: $OPENBRAIN_API_KEY")
+  JOB_STATUS=$(echo "$JOB_RESULT" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+  if [ "$JOB_STATUS" = "completed" ]; then
+    break
+  fi
+
+  if [ "$JOB_STATUS" = "failed" ]; then
+    echo -e "${RED}FAIL${NC}"
+    echo "Job failure: $JOB_RESULT"
+    exit 1
+  fi
+
+  sleep 2
+done
+
+if [ "$JOB_STATUS" = "completed" ] && echo "$JOB_RESULT" | grep -q '"thought_id"'; then
   echo -e "${GREEN}PASS${NC}"
 else
   echo -e "${RED}FAIL${NC}"
-  echo "Response: $UPLOAD_RESULT"
+  echo "Final job status response: $JOB_RESULT"
   exit 1
 fi
 
