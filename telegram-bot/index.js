@@ -35,14 +35,20 @@ const api = axios.create({
 function cleanText(text) {
   if (!text) return '';
   return text
-    .replace(/\\n/g, ' ')      // Replace literal \n with space
-    .replace(/\\t/g, ' ')      // Replace literal \t with space
-    .replace(/\\"/g, '"')      // Replace escaped quotes
-    .replace(/\\'/g, "'")      // Replace escaped apostrophes
-    .replace(/\\</g, '<')      // Replace escaped <
-    .replace(/\\>/g, '>')      // Replace escaped >
-    .replace(/\\\\/g, '\\')    // Replace double backslashes
-    .replace(/\s+/g, ' ')      // Replace multiple whitespace with single space
+    .replace(/\\n/g, ' ')         // Replace literal \n with space
+    .replace(/\\t/g, ' ')         // Replace literal \t with space
+    .replace(/\\"/g, '"')         // Replace escaped quotes
+    .replace(/\\'/g, "'")         // Replace escaped apostrophes
+    .replace(/\\</g, '<')         // Replace escaped <
+    .replace(/\\>/g, '>')         // Replace escaped >
+    .replace(/\\\\/g, '\\')       // Replace double backslashes
+    .replace(/<[^>]*>/g, '')      // Remove HTML tags
+    .replace(/&lt;/g, '<')        // Decode HTML entities
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, '&')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ')         // Replace multiple whitespace with single space
     .trim();
 }
 
