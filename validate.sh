@@ -78,6 +78,7 @@ check_required_file docker-compose.yml
 check_required_file Caddyfile
 check_required_file capture-api/index.js
 check_required_file capture-api/chunking.js
+check_required_file capture-api/memory-model.js
 check_required_file capture-api/ingestion-worker.js
 check_required_file mcp-server/index.js
 check_required_file mcp-server/http-server.js
@@ -197,6 +198,12 @@ if node --check capture-api/chunking.js >/dev/null 2>&1; then
     pass "capture-api/chunking.js valid"
 else
     fail "capture-api/chunking.js has syntax errors"
+fi
+
+if node --check capture-api/memory-model.js >/dev/null 2>&1; then
+    pass "capture-api/memory-model.js valid"
+else
+    fail "capture-api/memory-model.js has syntax errors"
 fi
 
 if node --check mcp-server/index.js >/dev/null 2>&1; then

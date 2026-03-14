@@ -305,7 +305,9 @@ fi
 echo -n "Test 11: HTTP MCP server exposes metadata tools with valid auth... "
 TOOLS_RESULT=$(mcp_post '{"jsonrpc":"2.0","id":3,"method":"tools/list"}')
 if echo "$TOOLS_RESULT" | grep -q 'semantic_search_filtered' && \
-   echo "$TOOLS_RESULT" | grep -q 'get_metadata_stats'; then
+   echo "$TOOLS_RESULT" | grep -q 'get_metadata_stats' && \
+   echo "$TOOLS_RESULT" | grep -q 'list_entities' && \
+   echo "$TOOLS_RESULT" | grep -q 'list_action_items'; then
   echo -e "${GREEN}PASS${NC}"
 else
   echo -e "${RED}FAIL${NC}"
@@ -407,6 +409,46 @@ if echo "$METADATA_STATS_RESULT" | grep -q 'unique_people' && \
 else
   echo -e "${RED}FAIL${NC}"
   echo "Response: $METADATA_STATS_RESULT"
+  exit 1
+fi
+
+echo -n "Test 16: Normalized entities tool returns canonical entities... "
+ENTITIES_RESULT=$(mcp_post '{
+  "jsonrpc": "2.0",
+  "id": 8,
+  "method": "tools/call",
+  "params": {
+    "name": "list_entities",
+    "arguments": {
+      "limit": 10
+    }
+  }
+}')
+if echo "$ENTITIES_RESULT" | grep -q 'canonical_name'; then
+  echo -e "${GREEN}PASS${NC}"
+else
+  echo -e "${RED}FAIL${NC}"
+  echo "Response: $ENTITIES_RESULT"
+  exit 1
+fi
+
+echo -n "Test 17: Normalized action items tool returns independent actions... "
+ACTIONS_RESULT=$(mcp_post '{
+  "jsonrpc": "2.0",
+  "id": 9,
+  "method": "tools/call",
+  "params": {
+    "name": "list_action_items",
+    "arguments": {
+      "limit": 10
+    }
+  }
+}')
+if echo "$ACTIONS_RESULT" | grep -q 'action_items'; then
+  echo -e "${GREEN}PASS${NC}"
+else
+  echo -e "${RED}FAIL${NC}"
+  echo "Response: $ACTIONS_RESULT"
   exit 1
 fi
 

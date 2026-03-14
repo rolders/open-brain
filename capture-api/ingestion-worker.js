@@ -6,6 +6,7 @@ const pdf = require('pdf-parse');
 const mammoth = require('mammoth');
 const { buildHashes } = require('./hashing');
 const { chunkDocument } = require('./chunking');
+const { persistNormalizedMemory } = require('./memory-model');
 
 const DEFAULT_NAMESPACE = 'default';
 const POLL_INTERVAL_MS = 2000;
@@ -463,6 +464,14 @@ async function processJob(job) {
       tokenCount: chunk.token_count,
       headingPath: chunk.heading_path,
       dedupeByContent: false,
+    });
+
+    await persistNormalizedMemory(pool, {
+      thoughtId: saved.id,
+      tenantId: saved.tenant_id,
+      workspaceId: saved.workspace_id,
+      content: chunk.content,
+      metadata: enhancedMetadata,
     });
 
     if (!rootThoughtId) {

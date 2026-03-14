@@ -67,6 +67,22 @@ In this environment, `ivfflat` cannot be created for 3072-d embeddings, so the s
 scripts/reindex-vectors.sh
 ```
 
+## Normalized memory model and canonical entities
+
+The system now writes a normalized layer alongside raw thoughts:
+
+- `memory_items`
+- `entities`
+- `entity_aliases`
+- `memory_entity_links`
+- `action_items`
+
+Entity aliases are resolved to canonical entities per workspace, and action items are queryable independently of raw memory text.
+
+MCP tools now include:
+- `list_entities`
+- `list_action_items`
+
 ## Image version policy
 
 Core runtime images are pinned for reproducibility:

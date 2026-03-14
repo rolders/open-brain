@@ -176,6 +176,44 @@ const TOOLS = [
       },
     },
   },
+  {
+    name: 'list_entities',
+    description: 'List canonical entities for a workspace (aliases resolved).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        workspace_id: {
+          type: 'string',
+          description: 'Workspace namespace filter (default: default)',
+          default: 'default',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum number of entities to return (default: 20)',
+          default: 20,
+        },
+      },
+    },
+  },
+  {
+    name: 'list_action_items',
+    description: 'List action items independently from raw memory content.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        workspace_id: {
+          type: 'string',
+          description: 'Workspace namespace filter (default: default)',
+          default: 'default',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum number of action items to return (default: 20)',
+          default: 20,
+        },
+      },
+    },
+  },
 ];
 
 const TOOL_NAMES = new Set(TOOLS.map((tool) => tool.name));
@@ -372,6 +410,13 @@ function normalizeToolArguments(toolName, rawArguments, id) {
     case 'get_metadata_stats':
       return {
         workspace_id: normalizeWorkspaceId(args.workspace_id, id),
+      };
+
+    case 'list_entities':
+    case 'list_action_items':
+      return {
+        workspace_id: normalizeWorkspaceId(args.workspace_id, id),
+        limit: normalizeLimit(args.limit, 20, id),
       };
 
     default:
@@ -600,6 +645,39 @@ async function getMetadataStats(workspaceId = 'default') {
   };
 }
 
+async function listEntities(workspaceId = 'default', limit = 20) {
+  const result = await pool.query(
+    `SELECT e.id, e.entity_type, e.canonical_name,
+            ARRAY_REMOVE(ARRAY_AGG(DISTINCT a.alias_name), NULL) AS aliases,
+            e.created_at
+     FROM entities e
+     LEFT JOIN entity_aliases a ON a.entity_id = e.id
+     WHERE e.workspace_id = $1
+     GROUP BY e.id, e.entity_type, e.canonical_name, e.created_at
+     ORDER BY e.created_at DESC
+     LIMIT $2`,
+    [workspaceId, limit],
+  );
+
+  return result.rows;
+}
+
+async function listActionItems(workspaceId = 'default', limit = 20) {
+  const result = await pool.query(
+    `SELECT ai.id, ai.action_type, ai.description, ai.deadline, ai.status, ai.confidence,
+            e.canonical_name AS assignee,
+            ai.created_at
+     FROM action_items ai
+     LEFT JOIN entities e ON e.id = ai.assignee_entity_id
+     WHERE ai.workspace_id = $1
+     ORDER BY ai.created_at DESC
+     LIMIT $2`,
+    [workspaceId, limit],
+  );
+
+  return result.rows;
+}
+
 async function executeTool(toolName, args) {
   switch (toolName) {
     case 'semantic_search': {
@@ -679,6 +757,26 @@ async function executeTool(toolName, args) {
         content: [{
           type: 'text',
           text: JSON.stringify({ workspace_id: args.workspace_id, ...metadataStats }, null, 2),
+        }],
+      };
+    }
+
+    case 'list_entities': {
+      const entities = await listEntities(args.workspace_id, args.limit);
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({ workspace_id: args.workspace_id, entities, count: entities.length }, null, 2),
+        }],
+      };
+    }
+
+    case 'list_action_items': {
+      const actionItems = await listActionItems(args.workspace_id, args.limit);
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({ workspace_id: args.workspace_id, action_items: actionItems, count: actionItems.length }, null, 2),
         }],
       };
     }

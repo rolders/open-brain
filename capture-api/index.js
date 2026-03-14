@@ -6,6 +6,7 @@ const path = require('path');
 const pdf = require('pdf-parse');
 const mammoth = require('mammoth');
 const { buildHashes } = require('./hashing');
+const { persistNormalizedMemory } = require('./memory-model');
 
 const MAX_UPLOAD_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_CAPTURE_CONTENT_CHARS = 20000;
@@ -280,6 +281,21 @@ async function enqueueIngestionJob({ workspaceId, payload }) {
   );
 
   return result.rows[0];
+}
+
+async function upsertNormalizedMemoryForThought({ thoughtId, tenantId, workspaceId, content, metadata }) {
+  const client = await pool.connect();
+  try {
+    await persistNormalizedMemory(client, {
+      thoughtId,
+      tenantId,
+      workspaceId,
+      content,
+      metadata,
+    });
+  } finally {
+    client.release();
+  }
 }
 
 fastify.setErrorHandler((error, request, reply) => {
@@ -578,6 +594,14 @@ fastify.post('/capture', {
     });
 
     const { id, created_at, tenant_id, workspace_id, deduplicated, content_hash, source_hash } = result;
+
+    await upsertNormalizedMemoryForThought({
+      thoughtId: id,
+      tenantId: tenant_id,
+      workspaceId: workspace_id,
+      content,
+      metadata: enhancedMetadata,
+    });
 
     return {
       success: true,
