@@ -7,7 +7,7 @@ A production-hardened, local Docker environment for a persistent memory system u
 ```
 ┌─────────────┐      ┌──────────┐      ┌──────────────┐
 │   Client    │─────▶│  Caddy   │─────▶│ Capture API  │
-│  (AI Agent) │      │ (8080)   │      │   (Node.js)  │
+│  (AI Agent) │      │ (8888)   │      │   (Node.js)  │
 └─────────────┘      └──────────┘      └──────┬───────┘
                                             │
                                             ▼
@@ -24,8 +24,8 @@ A production-hardened, local Docker environment for a persistent memory system u
 
 ## Features
 
-- **Vector Embeddings**: OpenAI text-embedding-3-small (1536 dimensions) stored in PostgreSQL with pgvector
-- **High-Speed Search**: HNSW indexing for O(log n) semantic search queries
+- **Vector Embeddings**: OpenAI text-embedding-3-large (3072 dimensions) stored in PostgreSQL with pgvector
+- **Semantic Search**: Cosine similarity search for finding semantically related thoughts
 - **Security**: Principle of least privilege with separate database roles (brain_writer, brain_reader)
 - **Rate Limiting**: Built-in rate limiting via Caddy reverse proxy
 - **MCP Protocol**: Standard Model Context Protocol for seamless AI agent integration
@@ -110,7 +110,7 @@ docker-compose logs -f capture-api
 Test adding a thought:
 
 ```bash
-curl -X POST http://localhost:8080/capture \
+curl -X POST http://localhost:8888/capture \
   -H "Content-Type: application/json" \
   -H "X-OpenBrain-Key: your_openbrain_api_key_here" \
   -d '{
@@ -142,7 +142,7 @@ Expected response:
 Add more thoughts for testing:
 
 ```bash
-curl -X POST http://localhost:8080/capture \
+curl -X POST http://localhost:8888/capture \
   -H "Content-Type: application/json" \
   -H "X-OpenBrain-Key: your_openbrain_api_key_here" \
   -d '{
@@ -157,7 +157,7 @@ curl -X POST http://localhost:8080/capture \
 Test health endpoint:
 
 ```bash
-curl http://localhost:8080/health
+curl http://localhost:8888/health
 ```
 
 ## MCP Server Integration
@@ -264,20 +264,11 @@ X-OpenBrain-Key: your_api_key_here
 
 Invalid or missing keys return `401 Unauthorized`.
 
-### Rate Limiting
+### Performance Notes
 
-Caddy enforces: **100 requests per minute** per client IP.
-
-Adjust in `Caddyfile`:
-```
-rate_limit {
-    zone brain_zone {
-        key {remote_host}
-        events 100      # Adjust here
-        window 1m
-    }
-}
-```
+- **Embedding Model**: text-embedding-3-large provides higher quality semantic understanding
+- **Search Method**: Sequential scan with cosine distance (HNSW indexing not supported for >2000 dimensions)
+- **Recommended**: For better performance with large datasets, consider text-embedding-3-small (1536 dimensions) with HNSW indexing
 
 ## Troubleshooting
 
