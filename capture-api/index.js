@@ -132,12 +132,20 @@ async function extractTextWithGLMOCR(buffer, filename) {
     // Convert buffer to base64
     const base64Image = buffer.toString('base64');
 
+    // Determine MIME type based on file extension
+    const ext = path.extname(filename).toLowerCase();
+    const mimeType = ext === '.png' ? 'image/png' :
+                     ext === '.gif' ? 'image/gif' :
+                     ext === '.bmp' ? 'image/bmp' :
+                     ext === '.webp' ? 'image/webp' :
+                     'image/jpeg';
+
     // Call z.ai GLM-OCR API
     const response = await axios.post(
       'https://api.z.ai/api/paas/v4/layout_parsing',
       {
         model: 'glm-ocr',
-        file: `data:image/jpeg;base64,${base64Image}` // GLM-OCR accepts base64 data URL
+        file: `data:${mimeType};base64,${base64Image}`
       },
       {
         headers: {
@@ -148,17 +156,34 @@ async function extractTextWithGLMOCR(buffer, filename) {
       }
     );
 
-    // Extract text from response
-    if (response.data && response.data.data) {
-      // The API returns parsed text in the data field
-      const result = response.data.data;
-      return result.text || result.content || JSON.stringify(result);
+    fastify.log.info('GLM-OCR API response status:', response.status);
+
+    // Extract text from response - the API returns data at root level
+    if (response.data) {
+      // The text content is in the md_results field
+      if (response.data.md_results) {
+        return response.data.md_results;
+      }
+      // Fallback: check for other possible text fields
+      if (response.data.text) {
+        return response.data.text;
+      }
+      if (response.data.content) {
+        return response.data.content;
+      }
+      // Last resort: return entire response as JSON for debugging
+      fastify.log.error('Unexpected GLM-OCR response format:', JSON.stringify(response.data).substring(0, 500));
+      throw new Error('Could not extract text from GLM-OCR response');
     } else {
       throw new Error('Invalid response format from GLM-OCR API');
     }
   } catch (error) {
-    fastify.log.error('GLM-OCR API error:', error.response?.data || error.message);
-    throw new Error(`Failed to extract text from image: ${error.message}`);
+    if (error.response) {
+      fastify.log.error('GLM-OCR API error response:', error.response.status, JSON.stringify(error.response.data).substring(0, 500));
+    } else {
+      fastify.log.error('GLM-OCR API error:', error.message);
+    }
+    throw new Error(`Failed to extract text from image: ${error.response?.data?.message || error.message}`);
   }
 }
 
