@@ -35,20 +35,23 @@ const api = axios.create({
 function cleanText(text) {
   if (!text) return '';
   return text
-    .replace(/\\n/g, ' ')         // Replace literal \n with space
-    .replace(/\\t/g, ' ')         // Replace literal \t with space
+    .replace(/\\n/g, '\n')        // Keep actual newlines
+    .replace(/\\t/g, ' ')         // Replace tabs with space
     .replace(/\\"/g, '"')         // Replace escaped quotes
     .replace(/\\'/g, "'")         // Replace escaped apostrophes
     .replace(/\\</g, '<')         // Replace escaped <
     .replace(/\\>/g, '>')         // Replace escaped >
     .replace(/\\\\/g, '\\')       // Replace double backslashes
-    .replace(/<[^>]*>/g, '')      // Remove HTML tags
+    .replace(/<\/td>/g, ' | ')    // Replace closing td with space
+    .replace(/<\/tr>/g, '\n')     // Replace closing tr with newline
+    .replace(/<[^>]*>/g, '')      // Remove remaining HTML tags
     .replace(/&lt;/g, '<')        // Decode HTML entities
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&amp;/g, '&')
     .replace(/&nbsp;/g, ' ')
-    .replace(/\s+/g, ' ')         // Replace multiple whitespace with single space
+    .replace(/!\[.*?\]\(.*?\)/g, '')  // Remove markdown image references
+    .replace(/\n{3,}/g, '\n\n')  // Reduce multiple newlines to 2
     .trim();
 }
 
@@ -209,12 +212,17 @@ bot.onText(/\/search (.+)/, async (msg, match) => {
       return;
     }
 
-    let searchResults = `🔍 *Search Results: "${query}"*\n\n`;
+    let searchResults = `🔍 *Search Results:* "${query}"\n\n`;
 
     result.thoughts.forEach((thought, index) => {
       const similarity = Math.round(thought.similarity * 100);
       const preview = cleanText(thought.content);
-      const truncatedPreview = preview.substring(0, 200) + (preview.length > 200 ? '...' : '');
+
+      // Split into lines and format nicely
+      const lines = preview.split('\n').filter(line => line.trim());
+      const previewLines = lines.slice(0, 6); // Show up to 6 lines
+      const formattedPreview = previewLines.join('\n');
+      const hasMore = lines.length > 6;
 
       // Add file info if available
       let fileInfo = '';
@@ -222,10 +230,10 @@ bot.onText(/\/search (.+)/, async (msg, match) => {
         fileInfo = `\n   📄 ${thought.metadata.filename}`;
       }
 
-      searchResults += `${index + 1}. *${similarity}% match*${fileInfo}\n${truncatedPreview}\n\n`;
+      searchResults += `${index + 1}. *${similarity}%*${fileInfo}\n${formattedPreview}${hasMore ? '\n...' : ''}\n\n`;
     });
 
-    bot.sendMessage(chatId, searchResults);
+    bot.sendMessage(chatId, searchResults, { parse_mode: 'Markdown' });
   } catch (error) {
     console.error('Error searching thoughts:', error.response?.data || error.message);
     bot.sendMessage(chatId, `❌ Failed to search: ${error.response?.data?.error || error.message}`);
@@ -268,23 +276,26 @@ bot.onText(/\/recent(?: (\d+))?/, async (msg, match) => {
     result.thoughts.forEach((thought, index) => {
       const date = new Date(thought.created_at).toLocaleDateString();
       const preview = cleanText(thought.content);
-      const truncatedPreview = preview.substring(0, 100) + (preview.length > 100 ? '...' : '');
+      const lines = preview.split('\n').filter(line => line.trim());
+      const previewLines = lines.slice(0, 3); // Show up to 3 lines
+      const formattedPreview = previewLines.join(' • '); // Join with bullet separator
+      const hasMore = lines.length > 3;
 
       // Add file info if available
       let fileInfo = '';
       if (thought.metadata) {
         if (thought.metadata.filename) {
-          fileInfo = ` 📄 ${thought.metadata.filename}`;
+          fileInfo = `\n   📄 ${thought.metadata.filename}`;
         }
         if (thought.metadata.source === 'file_upload') {
-          fileInfo = ` 📎 ${thought.metadata.filename || 'File'}`;
+          fileInfo = `\n   📎 ${thought.metadata.filename || 'File'}`;
         }
       }
 
-      recentMessage += `${index + 1}. ${truncatedPreview}\n   📅 ${date}${fileInfo}\n\n`;
+      recentMessage += `${index + 1}. ${formattedPreview}${hasMore ? '...' : ''}\n   📅 ${date}${fileInfo}\n\n`;
     });
 
-    bot.sendMessage(chatId, recentMessage);
+    bot.sendMessage(chatId, recentMessage, { parse_mode: 'Markdown' });
   } catch (error) {
     console.error('Error fetching recent thoughts:', error.response?.data || error.message);
     bot.sendMessage(chatId, `❌ Failed to fetch recent thoughts: ${error.response?.data?.error || error.message}`);
