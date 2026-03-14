@@ -30,6 +30,7 @@ services:
       DB_PASSWORD: ${DB_PASSWORD}
       OPENBRAIN_API_KEY: ${OPENBRAIN_API_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ZAI_API_KEY: ${ZAI_API_KEY}
       PORT: 3000
     depends_on:
       db:

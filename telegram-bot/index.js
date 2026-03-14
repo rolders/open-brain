@@ -1,5 +1,6 @@
 import TelegramBot from 'node-telegram-bot-api';
 import axios from 'axios';
+import FormData from 'form-data';
 
 // Environment variables
 const {
@@ -26,7 +27,6 @@ const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
 const api = axios.create({
   baseURL: CAPTURE_API_URL,
   headers: {
-    'Content-Type': 'application/json',
     'X-OpenBrain-Key': OPENBRAIN_API_KEY
   }
 });
@@ -34,6 +34,13 @@ const api = axios.create({
 // Helper function to escape markdown special characters
 function escapeMarkdown(text) {
   return text.replace(/[_*[\]()~`>#+=|{}.!\\-]/g, '\\$&');
+}
+
+// Helper function to format file size
+function formatFileSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
 }
 
 // Command: /start
@@ -50,6 +57,11 @@ Welcome! I'm your personal memory assistant. Here's what I can do:
 /recent - Show recent thoughts
 /stats - Memory statistics
 /help - Show this help message
+
+*File Support:*
+📄 Send text files (.txt, .md)
+📄 Send documents (.pdf, .docx)
+🖼️ Send images (.jpg, .png, etc.)
 
 *Examples:*
 /capture Docker containers are isolated runtime environments
@@ -85,6 +97,12 @@ bot.onText(/\/help/, (msg) => {
 
 /help
   Show this help message
+
+*File Uploads:*
+📄 Simply send any file to extract and store its content!
+  • Text files: .txt, .md
+  • Documents: .pdf, .docx
+  • Images: .jpg, .png, .gif (extracts text via OCR)
 
 💡 *Tip:* The more you capture, the better your semantic search becomes!
   `.trim();
@@ -268,17 +286,137 @@ ${result.latest_thought_at ? `🕐 Latest: ${new Date(result.latest_thought_at).
   }
 });
 
+// Handle document uploads
+bot.on('document', async (msg) => {
+  const chatId = msg.chat.id;
+  const document = msg.document;
+
+  console.log(`Received document: ${document.file_name} (${document.mime_type})`);
+
+  try {
+    await bot.sendChatAction(chatId, 'typing');
+    await bot.sendMessage(chatId, `📄 Processing document: ${document.file_name}...\n\nThis may take a moment for large files.`);
+
+    // Download file from Telegram
+    const fileLink = await bot.getFileLink(document.file_id);
+
+    // Download file content
+    const fileResponse = await axios.get(fileLink, { responseType: 'stream' });
+    const fileBuffer = await new Promise((resolve, reject) => {
+      const chunks = [];
+      fileResponse.data.on('data', (chunk) => chunks.push(chunk));
+      fileResponse.data.on('end', () => resolve(Buffer.concat(chunks)));
+      fileResponse.data.on('error', reject);
+    });
+
+    // Create form data
+    const formData = new FormData();
+    formData.append('file', fileBuffer, {
+      filename: document.file_name,
+      contentType: document.mime_type
+    });
+
+    // Upload to capture API
+    const uploadResponse = await api.post('/upload', formData, {
+      headers: formData.getHeaders(),
+      maxContentLength: 10 * 1024 * 1024, // 10MB
+      maxBodyLength: 10 * 1024 * 1024
+    });
+
+    const result = uploadResponse.data.data;
+
+    const successMessage = `
+✅ *Document Processed Successfully!*
+
+📄 *File:* ${escapeMarkdown(result.original_filename)}
+📏 *Size:* ${formatFileSize(result.file_size)}
+📝 *Content Length:* ${result.full_content_length} characters
+🆔 *Thought ID:* ${result.id}
+
+Preview: ${escapeMarkdown(result.content.substring(0, 150))}${result.content.length > 150 ? '...' : ''}
+    `.trim();
+
+    bot.sendMessage(chatId, successMessage, { parse_mode: 'Markdown' });
+
+  } catch (error) {
+    console.error('Error processing document:', error.response?.data || error.message);
+    bot.sendMessage(chatId, `❌ Failed to process document: ${error.response?.data?.message || error.message}`);
+  }
+});
+
+// Handle photo uploads
+bot.on('photo', async (msg) => {
+  const chatId = msg.chat.id;
+  const photos = msg.photo;
+
+  // Get the largest photo
+  const photo = photos[photos.length - 1];
+
+  console.log(`Received photo: ${photo.file_id}`);
+
+  try {
+    await bot.sendChatAction(chatId, 'typing');
+    await bot.sendMessage(chatId, `🖼️ Processing image...\n\nExtracting text with OCR. This may take a moment.`);
+
+    // Download file from Telegram
+    const fileLink = await bot.getFileLink(photo.file_id);
+
+    // Download file content
+    const fileResponse = await axios.get(fileLink, { responseType: 'stream' });
+    const fileBuffer = await new Promise((resolve, reject) => {
+      const chunks = [];
+      fileResponse.data.on('data', (chunk) => chunks.push(chunk));
+      fileResponse.data.on('end', () => resolve(Buffer.concat(chunks)));
+      fileResponse.data.on('error', reject);
+    });
+
+    // Create form data
+    const formData = new FormData();
+    formData.append('file', fileBuffer, {
+      filename: `photo_${photo.file_id}.jpg`,
+      contentType: 'image/jpeg'
+    });
+
+    // Upload to capture API
+    const uploadResponse = await api.post('/upload', formData, {
+      headers: formData.getHeaders(),
+      maxContentLength: 10 * 1024 * 1024, // 10MB
+      maxBodyLength: 10 * 1024 * 1024
+    });
+
+    const result = uploadResponse.data.data;
+
+    const successMessage = `
+✅ *Image Processed Successfully!*
+
+🖼️ *File:* ${escapeMarkdown(result.original_filename)}
+📏 *Size:* ${formatFileSize(result.file_size)}
+📝 *Extracted Text:* ${result.full_content_length} characters
+🆔 *Thought ID:* ${result.id}
+
+Preview: ${escapeMarkdown(result.content.substring(0, 150))}${result.content.length > 150 ? '...' : ''}
+    `.trim();
+
+    bot.sendMessage(chatId, successMessage, { parse_mode: 'Markdown' });
+
+  } catch (error) {
+    console.error('Error processing photo:', error.response?.data || error.message);
+    bot.sendMessage(chatId, `❌ Failed to process image: ${error.response?.data?.message || error.message}`);
+  }
+});
+
 // Handle non-command messages
 bot.on('message', (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
 
-  // Ignore commands
+  // Ignore commands, documents, and photos
   if (text?.startsWith('/')) return;
+  if (msg.document || msg.photo) return;
 
-  // Treat non-command messages as capture
+  // Treat non-command messages as capture hint
   if (text && text.trim().length > 0) {
-    bot.sendMessage(chatId, `💡 To save this thought, use: /capture ${text}\n\nOr use /help for more commands.`);
+    bot.sendMessage(chatId, `💡 To save this thought, use: /capture ${text}\n\n💡 Or send a file/document to extract and store its content!\n\nUse /help for more commands.`);
   }
 });
 
@@ -302,4 +440,6 @@ process.on('SIGINT', () => {
 
 // Start bot
 console.log('🤖 Open Brain Telegram Bot started');
-console.log('📝 Listening for commands...');
+console.log('📝 Listening for commands and file uploads...');
+console.log('📄 File upload support enabled');
+console.log('🖼️ Image OCR support enabled');

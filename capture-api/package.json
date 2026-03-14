@@ -9,6 +9,10 @@
   "dependencies": {
     "fastify": "^4.25.0",
     "pg": "^8.11.3",
-    "openai": "^4.20.0"
+    "openai": "^4.20.0",
+    "@fastify/multipart": "^8.0.0",
+    "axios": "^1.6.0",
+    "pdf-parse": "^1.1.1",
+    "mammoth": "^1.6.0"
   }
 }

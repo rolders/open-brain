@@ -26,9 +26,11 @@ A production-hardened, local Docker environment for a persistent memory system u
 
 - **Vector Embeddings**: OpenAI text-embedding-3-large (3072 dimensions) stored in PostgreSQL with pgvector
 - **Semantic Search**: Cosine similarity search for finding semantically related thoughts
+- **File Ingestion**: Upload documents and images for automatic text extraction (see [FILE_INGESTION.md](FILE_INGESTION.md))
+- **OCR Support**: Extract text from images using z.ai GLM-OCR API
 - **Security**: Principle of least privilege with separate database roles (brain_writer, brain_reader)
 - **MCP Protocol**: Standard Model Context Protocol for seamless AI agent integration
-- **Telegram Bot**: Capture and search thoughts via Telegram (see [TELEGRAM_SETUP.md](TELEGRAM_SETUP.md))
+- **Telegram Bot**: Capture text and upload files via Telegram (see [TELEGRAM_SETUP.md](TELEGRAM_SETUP.md))
 - **Production Ready**: Health checks, graceful shutdowns, connection pooling
 
 ## Prerequisites

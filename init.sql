@@ -6,6 +6,9 @@ CREATE TABLE thoughts (
     content TEXT NOT NULL,
     metadata JSONB DEFAULT '{}'::jsonb,
     embedding vector(3072), -- Optimized for OpenAI text-embedding-3-large
+    original_filename TEXT,
+    file_type TEXT,
+    file_size BIGINT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
