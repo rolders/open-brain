@@ -67,26 +67,43 @@ fastify.get('/health', async (request, reply) => {
   return { status: 'healthy', timestamp: new Date().toISOString() };
 });
 
+// Helper: Convert file stream to buffer
+async function fileToBuffer(file) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    file.on('data', (chunk) => chunks.push(chunk));
+    file.on('end', () => resolve(Buffer.concat(chunks)));
+    file.on('error', reject);
+  });
+}
+
 // Helper: Extract text from file based on type
+// Returns: { content, fileSize }
 async function extractTextFromFile(file, filename) {
   const ext = path.extname(filename).toLowerCase();
-  const buffer = await file.toBuffer();
+  const buffer = await fileToBuffer(file);
+  const fileSize = buffer.length;
+
+  let content;
 
   switch (ext) {
     case '.txt':
     case '.md':
       // Text files - read directly
-      return buffer.toString('utf-8');
+      content = buffer.toString('utf-8');
+      break;
 
     case '.pdf':
       // PDF files - use pdf-parse
       const data = await pdf(buffer);
-      return data.text;
+      content = data.text;
+      break;
 
     case '.docx':
       // Word documents - use mammoth
       const result = await mammoth.extractRawText({ buffer });
-      return result.value;
+      content = result.value;
+      break;
 
     case '.jpg':
     case '.jpeg':
@@ -95,11 +112,14 @@ async function extractTextFromFile(file, filename) {
     case '.bmp':
     case '.webp':
       // Image files - use z.ai GLM-OCR
-      return await extractTextWithGLMOCR(buffer, filename);
+      content = await extractTextWithGLMOCR(buffer, filename);
+      break;
 
     default:
       throw new Error(`Unsupported file type: ${ext}`);
   }
+
+  return { content, fileSize };
 }
 
 // Helper: Extract text from images using z.ai GLM-OCR
@@ -214,9 +234,9 @@ fastify.post('/upload', {
     fastify.log.info(`Processing file upload: ${filename} (${mimetype})`);
 
     // Extract text from file
-    let content;
+    let extractionResult;
     try {
-      content = await extractTextFromFile(file, filename);
+      extractionResult = await extractTextFromFile(file, filename);
     } catch (error) {
       fastify.log.error('Error extracting text from file:', error);
       reply.code(400).send({
@@ -226,15 +246,13 @@ fastify.post('/upload', {
       return;
     }
 
+    const { content, fileSize } = extractionResult;
+
     // Validate extracted content
     if (!content || content.trim().length === 0) {
       reply.code(400).send({ error: 'No text content found in file' });
       return;
     }
-
-    // Get file size
-    const buffer = await data.file.toBuffer();
-    const fileSize = buffer.length;
 
     // Generate metadata
     const metadata = {
