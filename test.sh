@@ -184,7 +184,15 @@ fi
 
 ensure_mcp_http_running
 
-echo -n "Test 7: HTTP MCP health endpoint stays public... "
+echo -n "Test 7: secret rotation script supports dry-run mode... "
+if scripts/rotate-secrets.sh --dry-run --non-interactive >/dev/null 2>&1; then
+  echo -e "${GREEN}PASS${NC}"
+else
+  echo -e "${RED}FAIL${NC}"
+  exit 1
+fi
+
+echo -n "Test 8: HTTP MCP health endpoint stays public... "
 MCP_HEALTH=$(curl -fsS "$MCP_HTTP_HEALTH_URL")
 if echo "$MCP_HEALTH" | grep -q '"status":"healthy"'; then
   echo -e "${GREEN}PASS${NC}"
@@ -315,7 +323,7 @@ else
   exit 1
 fi
 
-echo -n "Test 14: Metadata statistics tool returns aggregate data... "
+echo -n "Test 15: Metadata statistics tool returns aggregate data... "
 METADATA_STATS_RESULT=$(mcp_post '{
   "jsonrpc": "2.0",
   "id": 7,
@@ -347,3 +355,4 @@ printf '   {"jsonrpc":"2.0","id":1,"method":"tools/list"}\n'
 
 printf '\nManual MCP HTTP test:\n'
 printf '   curl -X POST %s -H "Content-Type: application/json" -H "X-MCP-Key: %s" -d '\''{"jsonrpc":"2.0","id":1,"method":"tools/list"}'\''\n' "$MCP_HTTP_URL" '$MCP_API_KEY'
+

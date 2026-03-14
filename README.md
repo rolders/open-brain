@@ -163,21 +163,30 @@ docker compose up -d db capture-api mcp-server caddy
 
 ### Option B: Rotate passwords in the existing database
 
-Use this if you must keep current data:
+Use this if you must keep current data.
+
+Recommended helper (creates `.env` backup, updates `.env`, applies `ALTER ROLE`, optional restarts):
+
+```bash
+scripts/rotate-secrets.sh --service-restart
+```
+
+Preview actions without changing anything:
+
+```bash
+scripts/rotate-secrets.sh --dry-run
+```
+
+If you want the old manual path, you can still run:
 
 ```bash
 docker compose exec db psql -U postgres -d openbrain -c "ALTER ROLE postgres WITH PASSWORD '<new POSTGRES_PASSWORD>';"
 docker compose exec db psql -U postgres -d openbrain -c "ALTER ROLE brain_writer WITH PASSWORD '<new BRAIN_WRITER_PASSWORD>';"
 docker compose exec db psql -U postgres -d openbrain -c "ALTER ROLE brain_reader WITH PASSWORD '<new BRAIN_READER_PASSWORD>';"
-```
-
-After rotating, restart dependent services:
-
-```bash
 docker compose restart db capture-api mcp-server mcp-server-http
 ```
 
-If the running database still uses older passwords, keep `.env` aligned with the actual live credentials until rotation or recreate is complete.
+See the detailed runbook in [`docs/operations/secret-rotation.md`](docs/operations/secret-rotation.md).
 
 ## Basic usage
 
