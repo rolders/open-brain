@@ -50,6 +50,28 @@ ensure_mcp_http_running() {
   fi
 }
 
+wait_for_capture_api() {
+  echo -e "${YELLOW}ℹ${NC}  waiting for Capture API behind Caddy to become ready..."
+
+  for _ in $(seq 1 30); do
+    local status
+    status=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_BASE_URL/capture" \
+      -H "Content-Type: application/json" \
+      -d '{"content": "readiness probe"}' || true)
+
+    if [ "$status" = "401" ]; then
+      return 0
+    fi
+
+    sleep 2
+  done
+
+  echo -e "${RED}FAIL${NC} Capture API did not become ready on $API_BASE_URL"
+  exit 1
+}
+
+wait_for_capture_api
+
 echo -n "Test 1: Caddy health endpoint on port 8888... "
 HEALTH=$(curl -fsS "$API_BASE_URL/health")
 if [ "$HEALTH" = "OK" ]; then
