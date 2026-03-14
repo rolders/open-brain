@@ -6,7 +6,7 @@ COPY package*.json ./
 
 RUN npm install --production
 
-COPY index.js ./
+COPY index.js hashing.js ./
 
 USER node
 

@@ -8,6 +8,7 @@ CREATE TABLE thoughts (
     source_type TEXT,
     source_uri TEXT,
     source_hash TEXT,
+    content_hash TEXT,
     captured_via TEXT,
     captured_by TEXT,
     content TEXT NOT NULL,
@@ -20,8 +21,10 @@ CREATE TABLE thoughts (
 );
 
 CREATE INDEX idx_thoughts_created_at ON thoughts (created_at DESC);
-CREATE INDEX idx_thoughts_metadata_gin ON thoughts USING GIN (metadata);
+CREATE INDEX idx_thoughts_metadata ON thoughts USING GIN (metadata);
 CREATE INDEX idx_thoughts_workspace_created_at ON thoughts (workspace_id, created_at DESC);
+CREATE INDEX idx_thoughts_workspace_source_hash ON thoughts (workspace_id, source_hash);
+CREATE INDEX idx_thoughts_workspace_content_hash ON thoughts (workspace_id, content_hash);
 
 -- Note: HNSW index is not supported for 3072-dimension vectors in this setup.
 -- Semantic search uses a sequential cosine-distance scan.

@@ -5,6 +5,7 @@ const axios = require('axios');
 const path = require('path');
 const pdf = require('pdf-parse');
 const mammoth = require('mammoth');
+const { buildHashes } = require('./hashing');
 
 const MAX_UPLOAD_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_CAPTURE_CONTENT_CHARS = 20000;
@@ -194,6 +195,79 @@ function deriveScopeAndProvenance(metadata = {}, defaults = {}) {
     captured_by: typeof safeMetadata.captured_by === 'string' && safeMetadata.captured_by.trim()
       ? safeMetadata.captured_by.trim()
       : null
+  };
+}
+
+async function saveThoughtWithDedupe({
+  scope,
+  content,
+  metadata,
+  embedding,
+  originalFilename = null,
+  fileType = null,
+  fileSize = null,
+  sourceContext = '',
+}) {
+  const hashes = buildHashes({
+    content,
+    workspaceId: scope.workspace_id,
+    sourceType: scope.source_type || 'unknown',
+    sourceUri: scope.source_uri || '',
+    sourceHash: scope.source_hash,
+    sourceContext,
+  });
+
+  const existing = await pool.query(
+    `SELECT id, created_at, tenant_id, workspace_id
+     FROM thoughts
+     WHERE workspace_id = $1 AND content_hash = $2
+     ORDER BY id ASC
+     LIMIT 1`,
+    [scope.workspace_id, hashes.contentHash],
+  );
+
+  if (existing.rows.length > 0) {
+    const row = existing.rows[0];
+    return {
+      id: row.id,
+      created_at: row.created_at,
+      tenant_id: row.tenant_id,
+      workspace_id: row.workspace_id,
+      content_hash: hashes.contentHash,
+      source_hash: hashes.sourceHash,
+      deduplicated: true,
+    };
+  }
+
+  const inserted = await pool.query(
+    `INSERT INTO thoughts
+      (tenant_id, workspace_id, agent_id, source_type, source_uri, source_hash, content_hash, captured_via, captured_by, content, metadata, embedding, original_filename, file_type, file_size)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::vector, $13, $14, $15)
+     RETURNING id, created_at, tenant_id, workspace_id`,
+    [
+      scope.tenant_id,
+      scope.workspace_id,
+      scope.agent_id,
+      scope.source_type,
+      scope.source_uri,
+      hashes.sourceHash,
+      hashes.contentHash,
+      scope.captured_via,
+      scope.captured_by,
+      content,
+      JSON.stringify(metadata),
+      `[${embedding.join(',')}]`,
+      originalFilename,
+      fileType,
+      fileSize,
+    ],
+  );
+
+  return {
+    ...inserted.rows[0],
+    content_hash: hashes.contentHash,
+    source_hash: hashes.sourceHash,
+    deduplicated: false,
   };
 }
 
@@ -479,28 +553,15 @@ fastify.post('/capture', {
       captured_via: 'api'
     });
 
-    // Insert into database using brain_writer role
-    const result = await pool.query(
-      `INSERT INTO thoughts
-        (tenant_id, workspace_id, agent_id, source_type, source_uri, source_hash, captured_via, captured_by, content, metadata, embedding)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::vector)
-       RETURNING id, created_at, tenant_id, workspace_id`,
-      [
-        scope.tenant_id,
-        scope.workspace_id,
-        scope.agent_id,
-        scope.source_type,
-        scope.source_uri,
-        scope.source_hash,
-        scope.captured_via,
-        scope.captured_by,
-        content,
-        JSON.stringify(enhancedMetadata),
-        `[${embedding.join(',')}]`
-      ]
-    );
+    const result = await saveThoughtWithDedupe({
+      scope,
+      content,
+      metadata: enhancedMetadata,
+      embedding,
+      sourceContext: 'capture',
+    });
 
-    const { id, created_at, tenant_id, workspace_id } = result.rows[0];
+    const { id, created_at, tenant_id, workspace_id, deduplicated, content_hash, source_hash } = result;
 
     return {
       success: true,
@@ -508,6 +569,9 @@ fastify.post('/capture', {
         id,
         tenant_id,
         workspace_id,
+        deduplicated,
+        content_hash,
+        source_hash,
         content,
         metadata: enhancedMetadata,
         created_at
@@ -578,31 +642,18 @@ fastify.post('/upload', {
       captured_via: 'upload'
     });
 
-    // Insert into database
-    const result = await pool.query(
-      `INSERT INTO thoughts
-        (tenant_id, workspace_id, agent_id, source_type, source_uri, source_hash, captured_via, captured_by, content, metadata, embedding, original_filename, file_type, file_size)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::vector, $12, $13, $14)
-       RETURNING id, created_at, tenant_id, workspace_id`,
-      [
-        scope.tenant_id,
-        scope.workspace_id,
-        scope.agent_id,
-        scope.source_type,
-        scope.source_uri,
-        scope.source_hash,
-        scope.captured_via,
-        scope.captured_by,
-        content,
-        JSON.stringify(enhancedMetadata),
-        `[${embedding.join(',')}]`,
-        filename,
-        path.extname(filename).toLowerCase(),
-        fileSize
-      ]
-    );
+    const result = await saveThoughtWithDedupe({
+      scope,
+      content,
+      metadata: enhancedMetadata,
+      embedding,
+      originalFilename: filename,
+      fileType: path.extname(filename).toLowerCase(),
+      fileSize,
+      sourceContext: `${filename}:${fileSize}`,
+    });
 
-    const { id, created_at, tenant_id, workspace_id } = result.rows[0];
+    const { id, created_at, tenant_id, workspace_id, deduplicated, content_hash, source_hash } = result;
 
     fastify.log.info(`Successfully processed file: ${filename} -> thought ID: ${id}`);
 
@@ -612,6 +663,9 @@ fastify.post('/upload', {
         id,
         tenant_id,
         workspace_id,
+        deduplicated,
+        content_hash,
+        source_hash,
         content: content.substring(0, 500) + (content.length > 500 ? '...' : ''),
         full_content_length: content.length,
         metadata: enhancedMetadata,

@@ -151,6 +151,24 @@ if [ -z "$THOUGHT_ID" ]; then
   exit 1
 fi
 
+echo -n "Test 4b: Duplicate capture is idempotent via content hash... "
+DEDUP_CAPTURE_RESULT=$(curl -fsS -X POST "$API_BASE_URL/capture" \
+  -H "Content-Type: application/json" \
+  -H "X-OpenBrain-Key: $OPENBRAIN_API_KEY" \
+  -d '{
+    "content": "John from Acme Corp decided to deploy the Docker container by Friday, and Sarah will handle the PostgreSQL migration after the infrastructure review.",
+    "metadata": {"source": "test", "topic": "deployment"}
+  }')
+DEDUP_ID=$(echo "$DEDUP_CAPTURE_RESULT" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+if [ "$THOUGHT_ID" = "$DEDUP_ID" ] && echo "$DEDUP_CAPTURE_RESULT" | grep -q '"deduplicated":true'; then
+  echo -e "${GREEN}PASS${NC}"
+else
+  echo -e "${RED}FAIL${NC}"
+  echo "Original id: $THOUGHT_ID"
+  echo "Duplicate response: $DEDUP_CAPTURE_RESULT"
+  exit 1
+fi
+
 echo -n "Test 5: Extracted metadata is persisted in PostgreSQL... "
 METADATA_ROW=$(docker exec openbrain-db psql -U postgres -d openbrain -t -A \
   -c "SELECT metadata::text FROM thoughts WHERE id = $THOUGHT_ID;")

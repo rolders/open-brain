@@ -8,6 +8,7 @@ ADD COLUMN IF NOT EXISTS agent_id TEXT,
 ADD COLUMN IF NOT EXISTS source_type TEXT,
 ADD COLUMN IF NOT EXISTS source_uri TEXT,
 ADD COLUMN IF NOT EXISTS source_hash TEXT,
+ADD COLUMN IF NOT EXISTS content_hash TEXT,
 ADD COLUMN IF NOT EXISTS captured_via TEXT,
 ADD COLUMN IF NOT EXISTS captured_by TEXT,
 ADD COLUMN IF NOT EXISTS original_filename TEXT,
@@ -23,9 +24,12 @@ COMMENT ON COLUMN thoughts.agent_id IS 'Agent identifier that produced the memor
 COMMENT ON COLUMN thoughts.source_type IS 'Capture source type (manual, upload, telegram, etc.)';
 COMMENT ON COLUMN thoughts.source_uri IS 'Source URI or external reference';
 COMMENT ON COLUMN thoughts.source_hash IS 'Deterministic hash for source provenance';
+COMMENT ON COLUMN thoughts.content_hash IS 'Deterministic hash for normalized content deduplication';
 COMMENT ON COLUMN thoughts.captured_via IS 'Capture channel (api, upload, bot, ingestion-worker)';
 COMMENT ON COLUMN thoughts.captured_by IS 'User or system actor that initiated capture';
 
-CREATE INDEX IF NOT EXISTS idx_thoughts_metadata_gin ON thoughts USING GIN (metadata);
+CREATE INDEX IF NOT EXISTS idx_thoughts_metadata ON thoughts USING GIN (metadata);
 CREATE INDEX IF NOT EXISTS idx_thoughts_created_at ON thoughts (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_thoughts_workspace_created_at ON thoughts (workspace_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_thoughts_workspace_source_hash ON thoughts (workspace_id, source_hash);
+CREATE INDEX IF NOT EXISTS idx_thoughts_workspace_content_hash ON thoughts (workspace_id, content_hash);

@@ -10,6 +10,7 @@
 - `source_type`
 - `source_uri`
 - `source_hash`
+- `content_hash`
 - `captured_via`
 - `captured_by`
 

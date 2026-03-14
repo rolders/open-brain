@@ -29,6 +29,14 @@ Memory rows now include namespace/provenance fields (`tenant_id`, `workspace_id`
 - MCP read tools support `workspace_id` filtering
 - If not provided, `workspace_id` defaults to `default`
 
+## Idempotent ingestion hashes
+
+Each captured item now computes:
+- `content_hash` (normalized text hash)
+- `source_hash` (source/provenance hash)
+
+For the same `workspace_id`, repeated capture of the same normalized content returns the existing row with `deduplicated: true`.
+
 ## Image version policy
 
 Core runtime images are pinned for reproducibility:
