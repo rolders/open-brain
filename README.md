@@ -211,6 +211,41 @@ Add to your Claude Desktop config file:
    - Name: `openbrain`
    - Command: `docker exec -i openbrain-mcp-server node /app/index.js`
 
+### Connecting with OpenClaw or Other MCP Clients
+
+For detailed instructions on connecting OpenClaw or other MCP-compatible clients,
+see [MCP_CONNECTION_GUIDE.md](MCP_CONNECTION_GUIDE.md).
+
+**Quick Start - HTTP Connection:**
+```json
+{
+  "mcpServers": {
+    "openbrain": {
+      "url": "http://localhost:3000/mcp",
+      "transport": "http"
+    }
+  }
+}
+```
+
+**Quick Start - Stdio Connection:**
+```json
+{
+  "mcpServers": {
+    "openbrain": {
+      "command": "docker",
+      "args": [
+        "exec",
+        "-i",
+        "openbrain-mcp-server",
+        "node",
+        "/app/index.js"
+      ]
+    }
+  }
+}
+```
+
 ## Telegram Bot Integration
 
 Capture and search your thoughts directly from Telegram! 📱
