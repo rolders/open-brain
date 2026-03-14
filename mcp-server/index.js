@@ -58,6 +58,11 @@ const TOOLS = [
           description: 'Maximum number of results to return (default: 10)',
           default: 10,
         },
+        workspace_id: {
+          type: 'string',
+          description: 'Workspace namespace filter (default: default)',
+          default: 'default',
+        },
       },
       required: ['query'],
     },
@@ -73,6 +78,11 @@ const TOOLS = [
           description: 'Maximum number of results to return (default: 20)',
           default: 20,
         },
+        workspace_id: {
+          type: 'string',
+          description: 'Workspace namespace filter (default: default)',
+          default: 'default',
+        },
       },
     },
   },
@@ -81,7 +91,13 @@ const TOOLS = [
     description: 'Get statistics about the thoughts database',
     inputSchema: {
       type: 'object',
-      properties: {},
+      properties: {
+        workspace_id: {
+          type: 'string',
+          description: 'Workspace namespace filter (default: default)',
+          default: 'default',
+        },
+      },
     },
   },
   {
@@ -98,6 +114,11 @@ const TOOLS = [
           type: 'number',
           description: 'Maximum number of results to return (default: 10)',
           default: 10,
+        },
+        workspace_id: {
+          type: 'string',
+          description: 'Workspace namespace filter (default: default)',
+          default: 'default',
         },
         filters: {
           type: 'object',
@@ -128,7 +149,13 @@ const TOOLS = [
     description: 'Get aggregate metadata statistics plus commonly available people, topics, and action types.',
     inputSchema: {
       type: 'object',
-      properties: {},
+      properties: {
+        workspace_id: {
+          type: 'string',
+          description: 'Workspace namespace filter (default: default)',
+          default: 'default',
+        },
+      },
     },
   },
 ];
@@ -160,8 +187,8 @@ async function createQueryEmbedding(query) {
   return `[${embeddingResponse.data[0].embedding.join(',')}]`;
 }
 
-function buildMetadataFilterClause(filters = {}, startingIndex = 3) {
-  const conditions = ['embedding IS NOT NULL'];
+function buildMetadataFilterClause(filters = {}, startingIndex = 4) {
+  const conditions = ['embedding IS NOT NULL', 'workspace_id = $3'];
   const values = [];
   let nextIndex = startingIndex;
 
@@ -201,23 +228,23 @@ function buildMetadataFilterClause(filters = {}, startingIndex = 3) {
   };
 }
 
-async function runSemanticSearch(query, limit = 10, filters = null) {
+async function runSemanticSearch(query, limit = 10, filters = null, workspaceId = 'default') {
   if (!query) {
     throw new Error('Missing required parameter: query');
   }
 
   const embeddingString = await createQueryEmbedding(query);
-  const values = [embeddingString, limit];
-  let whereClause = 'embedding IS NOT NULL';
+  const values = [embeddingString, limit, workspaceId];
+  let whereClause = 'embedding IS NOT NULL AND workspace_id = $3';
 
   if (filters) {
-    const filterQuery = buildMetadataFilterClause(filters, 3);
+    const filterQuery = buildMetadataFilterClause(filters, 4);
     whereClause = filterQuery.whereClause;
     values.push(...filterQuery.values);
   }
 
   const result = await pool.query(
-    `SELECT id, content, metadata, created_at,
+    `SELECT id, tenant_id, workspace_id, content, metadata, created_at,
             1 - (embedding <=> $1::vector) AS similarity
      FROM thoughts
      WHERE ${whereClause}
@@ -229,7 +256,7 @@ async function runSemanticSearch(query, limit = 10, filters = null) {
   return result.rows;
 }
 
-async function getMetadataStats() {
+async function getMetadataStats(workspaceId = 'default') {
   const statsResult = await pool.query(`
     SELECT
       COUNT(*)::int AS total_thoughts,
@@ -238,34 +265,38 @@ async function getMetadataStats() {
       COALESCE(SUM(jsonb_array_length(COALESCE(metadata->'extracted'->'topics', '[]'::jsonb))), 0)::int AS total_topics,
       COALESCE(SUM(jsonb_array_length(COALESCE(metadata->'extracted'->'action_items', '[]'::jsonb))), 0)::int AS total_actions
     FROM thoughts
-  `);
+    WHERE workspace_id = $1
+  `, [workspaceId]);
 
   const peopleResult = await pool.query(`
     SELECT DISTINCT person->>'name' AS person
     FROM thoughts
     CROSS JOIN LATERAL jsonb_array_elements(COALESCE(metadata->'extracted'->'people', '[]'::jsonb)) AS person
-    WHERE person->>'name' IS NOT NULL AND person->>'name' <> ''
+    WHERE workspace_id = $1
+      AND person->>'name' IS NOT NULL AND person->>'name' <> ''
     ORDER BY person
     LIMIT 20
-  `);
+  `, [workspaceId]);
 
   const topicsResult = await pool.query(`
     SELECT DISTINCT topic->>'name' AS topic
     FROM thoughts
     CROSS JOIN LATERAL jsonb_array_elements(COALESCE(metadata->'extracted'->'topics', '[]'::jsonb)) AS topic
-    WHERE topic->>'name' IS NOT NULL AND topic->>'name' <> ''
+    WHERE workspace_id = $1
+      AND topic->>'name' IS NOT NULL AND topic->>'name' <> ''
     ORDER BY topic
     LIMIT 20
-  `);
+  `, [workspaceId]);
 
   const actionTypesResult = await pool.query(`
     SELECT action->>'type' AS action_type, COUNT(*)::int AS count
     FROM thoughts
     CROSS JOIN LATERAL jsonb_array_elements(COALESCE(metadata->'extracted'->'action_items', '[]'::jsonb)) AS action
-    WHERE action->>'type' IS NOT NULL AND action->>'type' <> ''
+    WHERE workspace_id = $1
+      AND action->>'type' IS NOT NULL AND action->>'type' <> ''
     GROUP BY action->>'type'
     ORDER BY count DESC, action_type ASC
-  `);
+  `, [workspaceId]);
 
   return {
     stats: statsResult.rows[0],
@@ -285,55 +316,57 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     switch (name) {
       case 'semantic_search': {
-        const { query, limit = 10 } = args || {};
-        const thoughts = await runSemanticSearch(query, limit);
+        const { query, limit = 10, workspace_id = 'default' } = args || {};
+        const thoughts = await runSemanticSearch(query, limit, null, workspace_id);
 
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify({ query, thoughts, count: thoughts.length }, null, 2),
+              text: JSON.stringify({ query, workspace_id, thoughts, count: thoughts.length }, null, 2),
             },
           ],
         };
       }
 
       case 'semantic_search_filtered': {
-        const { query, limit = 10, filters = {} } = args || {};
-        const thoughts = await runSemanticSearch(query, limit, filters);
+        const { query, limit = 10, workspace_id = 'default', filters = {} } = args || {};
+        const thoughts = await runSemanticSearch(query, limit, filters, workspace_id);
 
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify({ query, filters, thoughts, count: thoughts.length }, null, 2),
+              text: JSON.stringify({ query, workspace_id, filters, thoughts, count: thoughts.length }, null, 2),
             },
           ],
         };
       }
 
       case 'list_recent': {
-        const { limit = 20 } = args || {};
+        const { limit = 20, workspace_id = 'default' } = args || {};
 
         const result = await pool.query(
-          'SELECT id, content, metadata, created_at FROM thoughts ORDER BY created_at DESC LIMIT $1',
-          [limit]
+          'SELECT id, tenant_id, workspace_id, content, metadata, created_at FROM thoughts WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT $2',
+          [workspace_id, limit]
         );
 
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify({ thoughts: result.rows, count: result.rows.length }, null, 2),
+              text: JSON.stringify({ workspace_id, thoughts: result.rows, count: result.rows.length }, null, 2),
             },
           ],
         };
       }
 
       case 'get_stats': {
-        const countResult = await pool.query('SELECT COUNT(*) as count FROM thoughts');
+        const { workspace_id = 'default' } = args || {};
+        const countResult = await pool.query('SELECT COUNT(*) as count FROM thoughts WHERE workspace_id = $1', [workspace_id]);
         const latestResult = await pool.query(
-          'SELECT created_at FROM thoughts ORDER BY created_at DESC LIMIT 1'
+          'SELECT created_at FROM thoughts WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT 1',
+          [workspace_id]
         );
 
         return {
@@ -341,6 +374,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: 'text',
               text: JSON.stringify({
+                workspace_id,
                 total_thoughts: parseInt(countResult.rows[0].count, 10),
                 latest_thought_at: latestResult.rows[0]?.created_at || null,
               }, null, 2),
@@ -350,13 +384,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'get_metadata_stats': {
-        const metadataStats = await getMetadataStats();
+        const { workspace_id = 'default' } = args || {};
+        const metadataStats = await getMetadataStats(workspace_id);
 
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify(metadataStats, null, 2),
+              text: JSON.stringify({ workspace_id, ...metadataStats }, null, 2),
             },
           ],
         };

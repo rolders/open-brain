@@ -10,6 +10,7 @@ const MAX_UPLOAD_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_CAPTURE_CONTENT_CHARS = 20000;
 const MAX_EXTRACTED_CONTENT_CHARS = 20000;
 const OCR_LOG_KEY_LIMIT = 10;
+const DEFAULT_NAMESPACE = 'default';
 
 const fastify = Fastify({ logger: true });
 
@@ -161,6 +162,39 @@ function getObjectKeys(value) {
   }
 
   return Object.keys(value).slice(0, OCR_LOG_KEY_LIMIT);
+}
+
+function deriveScopeAndProvenance(metadata = {}, defaults = {}) {
+  const safeMetadata = metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+    ? metadata
+    : {};
+
+  return {
+    tenant_id: typeof safeMetadata.tenant_id === 'string' && safeMetadata.tenant_id.trim()
+      ? safeMetadata.tenant_id.trim()
+      : DEFAULT_NAMESPACE,
+    workspace_id: typeof safeMetadata.workspace_id === 'string' && safeMetadata.workspace_id.trim()
+      ? safeMetadata.workspace_id.trim()
+      : DEFAULT_NAMESPACE,
+    agent_id: typeof safeMetadata.agent_id === 'string' && safeMetadata.agent_id.trim()
+      ? safeMetadata.agent_id.trim()
+      : null,
+    source_type: typeof safeMetadata.source_type === 'string' && safeMetadata.source_type.trim()
+      ? safeMetadata.source_type.trim()
+      : (defaults.source_type || null),
+    source_uri: typeof safeMetadata.source_uri === 'string' && safeMetadata.source_uri.trim()
+      ? safeMetadata.source_uri.trim()
+      : null,
+    source_hash: typeof safeMetadata.source_hash === 'string' && safeMetadata.source_hash.trim()
+      ? safeMetadata.source_hash.trim()
+      : null,
+    captured_via: typeof safeMetadata.captured_via === 'string' && safeMetadata.captured_via.trim()
+      ? safeMetadata.captured_via.trim()
+      : (defaults.captured_via || null),
+    captured_by: typeof safeMetadata.captured_by === 'string' && safeMetadata.captured_by.trim()
+      ? safeMetadata.captured_by.trim()
+      : null
+  };
 }
 
 fastify.setErrorHandler((error, request, reply) => {
@@ -440,18 +474,40 @@ fastify.post('/capture', {
 
     const embedding = embeddingResponse.data[0].embedding;
 
+    const scope = deriveScopeAndProvenance(enhancedMetadata, {
+      source_type: 'manual',
+      captured_via: 'api'
+    });
+
     // Insert into database using brain_writer role
     const result = await pool.query(
-      'INSERT INTO thoughts (content, metadata, embedding) VALUES ($1, $2, $3::vector) RETURNING id, created_at',
-      [content, JSON.stringify(enhancedMetadata), `[${embedding.join(',')}]`]
+      `INSERT INTO thoughts
+        (tenant_id, workspace_id, agent_id, source_type, source_uri, source_hash, captured_via, captured_by, content, metadata, embedding)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::vector)
+       RETURNING id, created_at, tenant_id, workspace_id`,
+      [
+        scope.tenant_id,
+        scope.workspace_id,
+        scope.agent_id,
+        scope.source_type,
+        scope.source_uri,
+        scope.source_hash,
+        scope.captured_via,
+        scope.captured_by,
+        content,
+        JSON.stringify(enhancedMetadata),
+        `[${embedding.join(',')}]`
+      ]
     );
 
-    const { id, created_at } = result.rows[0];
+    const { id, created_at, tenant_id, workspace_id } = result.rows[0];
 
     return {
       success: true,
       data: {
         id,
+        tenant_id,
+        workspace_id,
         content,
         metadata: enhancedMetadata,
         created_at
@@ -517,10 +573,26 @@ fastify.post('/upload', {
 
     const embedding = embeddingResponse.data[0].embedding;
 
+    const scope = deriveScopeAndProvenance(enhancedMetadata, {
+      source_type: 'file_upload',
+      captured_via: 'upload'
+    });
+
     // Insert into database
     const result = await pool.query(
-      'INSERT INTO thoughts (content, metadata, embedding, original_filename, file_type, file_size) VALUES ($1, $2, $3::vector, $4, $5, $6) RETURNING id, created_at',
+      `INSERT INTO thoughts
+        (tenant_id, workspace_id, agent_id, source_type, source_uri, source_hash, captured_via, captured_by, content, metadata, embedding, original_filename, file_type, file_size)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::vector, $12, $13, $14)
+       RETURNING id, created_at, tenant_id, workspace_id`,
       [
+        scope.tenant_id,
+        scope.workspace_id,
+        scope.agent_id,
+        scope.source_type,
+        scope.source_uri,
+        scope.source_hash,
+        scope.captured_via,
+        scope.captured_by,
         content,
         JSON.stringify(enhancedMetadata),
         `[${embedding.join(',')}]`,
@@ -530,7 +602,7 @@ fastify.post('/upload', {
       ]
     );
 
-    const { id, created_at } = result.rows[0];
+    const { id, created_at, tenant_id, workspace_id } = result.rows[0];
 
     fastify.log.info(`Successfully processed file: ${filename} -> thought ID: ${id}`);
 
@@ -538,6 +610,8 @@ fastify.post('/upload', {
       success: true,
       data: {
         id,
+        tenant_id,
+        workspace_id,
         content: content.substring(0, 500) + (content.length > 500 ? '...' : ''),
         full_content_length: content.length,
         metadata: enhancedMetadata,

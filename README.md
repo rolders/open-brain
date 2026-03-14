@@ -21,10 +21,18 @@ Optional services:
 - `mcp-server-http`: HTTP MCP endpoint on `http://127.0.0.1:3000/mcp`
 - `telegram-bot`: Telegram capture/search bot
 
+## Namespace and provenance model
+
+Memory rows now include namespace/provenance fields (`tenant_id`, `workspace_id`, `agent_id`, `source_type`, `source_uri`, `source_hash`, `captured_via`, `captured_by`).
+
+- Capture endpoints accept these values via `metadata`
+- MCP read tools support `workspace_id` filtering
+- If not provided, `workspace_id` defaults to `default`
+
 ## Image version policy
 
 Core runtime images are pinned for reproducibility:
-- `ankane/pgvector:0.7.0`
+- `ankane/pgvector:v0.5.1`
 - `caddy:2.7.6`
 
 Do not use floating tags (for example `:latest`) in committed compose files.

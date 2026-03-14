@@ -1,6 +1,6 @@
 services:
   db:
-    image: ankane/pgvector:0.7.0
+    image: ankane/pgvector:v0.5.1
     container_name: openbrain-db
     environment:
       POSTGRES_USER: postgres

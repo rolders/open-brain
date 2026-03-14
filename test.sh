@@ -202,7 +202,7 @@ else
   exit 1
 fi
 
-echo -n "Test 8: HTTP MCP rejects missing MCP key... "
+echo -n "Test 9: HTTP MCP rejects missing MCP key... "
 MISSING_KEY_BODY=$(mktemp)
 MISSING_KEY_STATUS=$(curl -sS -o "$MISSING_KEY_BODY" -w "%{http_code}" -X POST "$MCP_HTTP_URL" \
   -H "Content-Type: application/json" \
@@ -218,7 +218,7 @@ else
   exit 1
 fi
 
-echo -n "Test 9: HTTP MCP rejects invalid MCP key... "
+echo -n "Test 10: HTTP MCP rejects invalid MCP key... "
 INVALID_KEY_BODY=$(mktemp)
 INVALID_KEY_STATUS=$(curl -sS -o "$INVALID_KEY_BODY" -w "%{http_code}" -X POST "$MCP_HTTP_URL" \
   -H "Content-Type: application/json" \
@@ -235,7 +235,7 @@ else
   exit 1
 fi
 
-echo -n "Test 10: HTTP MCP server exposes metadata tools with valid auth... "
+echo -n "Test 11: HTTP MCP server exposes metadata tools with valid auth... "
 TOOLS_RESULT=$(mcp_post '{"jsonrpc":"2.0","id":3,"method":"tools/list"}')
 if echo "$TOOLS_RESULT" | grep -q 'semantic_search_filtered' && \
    echo "$TOOLS_RESULT" | grep -q 'get_metadata_stats'; then
@@ -246,7 +246,7 @@ else
   exit 1
 fi
 
-echo -n "Test 11: HTTP MCP sanitizes invalid parameter errors... "
+echo -n "Test 12: HTTP MCP sanitizes invalid parameter errors... "
 INVALID_PARAMS_BODY=$(mktemp)
 INVALID_PARAMS_STATUS=$(curl -sS -o "$INVALID_PARAMS_BODY" -w "%{http_code}" -X POST "$MCP_HTTP_URL" \
   -H "Content-Type: application/json" \
@@ -275,7 +275,7 @@ else
   exit 1
 fi
 
-echo -n "Test 12: HTTP MCP clamps list_recent limit to a safe minimum... "
+echo -n "Test 13: HTTP MCP clamps list_recent limit to a safe minimum... "
 LIST_RECENT_RESULT=$(mcp_post '{
   "jsonrpc": "2.0",
   "id": 5,
@@ -296,7 +296,7 @@ else
   exit 1
 fi
 
-echo -n "Test 13: Filtered semantic search works through MCP HTTP... "
+echo -n "Test 14: Filtered semantic search works through MCP HTTP... "
 FILTERED_SEARCH_RESULT=$(mcp_post '{
   "jsonrpc": "2.0",
   "id": 6,
@@ -355,4 +355,5 @@ printf '   {"jsonrpc":"2.0","id":1,"method":"tools/list"}\n'
 
 printf '\nManual MCP HTTP test:\n'
 printf '   curl -X POST %s -H "Content-Type: application/json" -H "X-MCP-Key: %s" -d '\''{"jsonrpc":"2.0","id":1,"method":"tools/list"}'\''\n' "$MCP_HTTP_URL" '$MCP_API_KEY'
+
 
