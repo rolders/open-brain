@@ -55,11 +55,10 @@ function cleanText(text) {
     .trim();
 }
 
-// Helper function to escape basic markdown characters for messages with markdown formatting
-function escapeBasicMarkdown(text) {
+// Helper function to normalize text for plain Telegram messages
+function formatPlainText(text) {
   if (!text) return '';
-  // Only escape the most common markdown characters that break formatting
-  return text.replace(/[*_()\[\]]/g, '\\$&');
+  return String(text).replace(/\r/g, '').trim();
 }
 
 // Helper function to format file size
@@ -159,16 +158,17 @@ bot.onText(/\/capture (.+)/, async (msg, match) => {
     });
 
     const { id, created_at } = response.data.data;
+    const preview = `${formatPlainText(content.substring(0, 100))}${content.length > 100 ? '…' : ''}`;
     const message = `
-✅ *Thought Captured!*
+✅ Thought Captured!
 
 ID: ${id}
 Created: ${new Date(created_at).toLocaleString()}
 
-Preview: ${escapeMarkdown(content.substring(0, 100))}${content.length > 100 ? '...' : ''}
+Preview: ${preview}
     `.trim();
 
-    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, message);
   } catch (error) {
     console.error('Error capturing thought:', error.response?.data || error.message);
     bot.sendMessage(chatId, `❌ Failed to capture thought: ${error.response?.data?.error || error.message}`);
@@ -380,18 +380,19 @@ bot.on('document', async (msg) => {
 
     const result = uploadResponse.data.data;
 
+    const preview = `${formatPlainText(cleanText(result.content).substring(0, 200))}${result.content.length > 200 ? '…' : ''}`;
     const successMessage = `
-✅ *Document Processed Successfully!*
+✅ Document Processed Successfully!
 
-📄 *File:* ${result.original_filename}
-📏 *Size:* ${formatFileSize(result.file_size)}
-📝 *Content Length:* ${result.full_content_length} characters
-🆔 *Thought ID:* ${result.id}
+📄 File: ${formatPlainText(result.original_filename)}
+📏 Size: ${formatFileSize(result.file_size)}
+📝 Content Length: ${result.full_content_length} characters
+🆔 Thought ID: ${result.id}
 
-Preview: ${escapeBasicMarkdown(cleanText(result.content).substring(0, 200))}${result.content.length > 200 ? '...' : ''}
+Preview: ${preview}
     `.trim();
 
-    bot.sendMessage(chatId, successMessage, { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, successMessage);
 
   } catch (error) {
     console.error('Error processing document:', error.response?.data || error.message);
@@ -441,18 +442,19 @@ bot.on('photo', async (msg) => {
 
     const result = uploadResponse.data.data;
 
+    const preview = `${formatPlainText(cleanText(result.content).substring(0, 200))}${result.content.length > 200 ? '…' : ''}`;
     const successMessage = `
-✅ *Image Processed Successfully!*
+✅ Image Processed Successfully!
 
-🖼️ *File:* ${result.original_filename}
-📏 *Size:* ${formatFileSize(result.file_size)}
-📝 *Extracted Text:* ${result.full_content_length} characters
-🆔 *Thought ID:* ${result.id}
+🖼️ File: ${formatPlainText(result.original_filename)}
+📏 Size: ${formatFileSize(result.file_size)}
+📝 Extracted Text: ${result.full_content_length} characters
+🆔 Thought ID: ${result.id}
 
-Preview: ${escapeBasicMarkdown(cleanText(result.content).substring(0, 200))}${result.content.length > 200 ? '...' : ''}
+Preview: ${preview}
     `.trim();
 
-    bot.sendMessage(chatId, successMessage, { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, successMessage);
 
   } catch (error) {
     console.error('Error processing photo:', error.response?.data || error.message);
