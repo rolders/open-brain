@@ -1,6 +1,7 @@
 import TelegramBot from 'node-telegram-bot-api';
 import axios from 'axios';
 import FormData from 'form-data';
+import { buildUploadSuccessMessage } from './upload-format.js';
 
 const TELEGRAM_MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 const RECENT_DEFAULT_LIMIT = 5;
@@ -291,6 +292,38 @@ async function callMcpTool(name, args) {
   });
 
   return JSON.parse(response.data.result.content[0].text);
+}
+
+async function waitForIngestionJob(jobId, {
+  timeoutMs = 60_000,
+  pollIntervalMs = 2_000,
+} = {}) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const response = await api.get(`/ingestion/jobs/${jobId}`);
+    const job = response.data?.data;
+
+    if (job?.status === 'completed') {
+      return job.result || {};
+    }
+
+    if (job?.status === 'failed') {
+      const jobError = String(job.error || 'Ingestion job failed');
+      const error = new Error(jobError);
+      error.response = {
+        status: 400,
+        data: {
+          error: jobError
+        }
+      };
+      throw error;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
+
+  return null;
 }
 
 // Command: /start
@@ -587,21 +620,24 @@ bot.on('document', async (msg) => {
       maxBodyLength: TELEGRAM_MAX_UPLOAD_BYTES
     });
 
-    const result = uploadResponse.data.data;
+    const uploadResult = uploadResponse.data.data;
 
-    const preview = `${formatPlainText(cleanText(result.content).substring(0, 200))}${result.content.length > 200 ? '…' : ''}`;
-    const successMessage = `
-✅ Document Processed Successfully!
+    if (uploadResult.job_id) {
+      await bot.sendMessage(chatId, `⏳ Document queued for processing (job ${uploadResult.job_id}). I'll send the result when it's ready.`);
+      const completedResult = await waitForIngestionJob(uploadResult.job_id);
 
-📄 File: ${formatPlainText(result.original_filename)}
-📏 Size: ${formatFileSize(result.file_size)}
-📝 Content Length: ${result.full_content_length} characters
-🆔 Thought ID: ${result.id}
+      if (!completedResult) {
+        await bot.sendMessage(chatId, `⌛ Document job ${uploadResult.job_id} is still processing. Please try /recent in a minute.`);
+        return;
+      }
 
-Preview: ${preview}
-    `.trim();
+      const successMessage = buildUploadSuccessMessage('document', completedResult, { formatFileSize });
+      await bot.sendMessage(chatId, successMessage);
+      return;
+    }
 
-    bot.sendMessage(chatId, successMessage);
+    const successMessage = buildUploadSuccessMessage('document', uploadResult, { formatFileSize });
+    await bot.sendMessage(chatId, successMessage);
   } catch (error) {
     logServiceError('Error processing document', error);
     bot.sendMessage(chatId, `❌ ${getSanitizedUserError('document', error)}`);
@@ -649,21 +685,24 @@ bot.on('photo', async (msg) => {
       maxBodyLength: TELEGRAM_MAX_UPLOAD_BYTES
     });
 
-    const result = uploadResponse.data.data;
+    const uploadResult = uploadResponse.data.data;
 
-    const preview = `${formatPlainText(cleanText(result.content).substring(0, 200))}${result.content.length > 200 ? '…' : ''}`;
-    const successMessage = `
-✅ Image Processed Successfully!
+    if (uploadResult.job_id) {
+      await bot.sendMessage(chatId, `⏳ Image queued for processing (job ${uploadResult.job_id}). I'll send the result when it's ready.`);
+      const completedResult = await waitForIngestionJob(uploadResult.job_id);
 
-🖼️ File: ${formatPlainText(result.original_filename)}
-📏 Size: ${formatFileSize(result.file_size)}
-📝 Extracted Text: ${result.full_content_length} characters
-🆔 Thought ID: ${result.id}
+      if (!completedResult) {
+        await bot.sendMessage(chatId, `⌛ Image job ${uploadResult.job_id} is still processing. Please try /recent in a minute.`);
+        return;
+      }
 
-Preview: ${preview}
-    `.trim();
+      const successMessage = buildUploadSuccessMessage('photo', completedResult, { formatFileSize });
+      await bot.sendMessage(chatId, successMessage);
+      return;
+    }
 
-    bot.sendMessage(chatId, successMessage);
+    const successMessage = buildUploadSuccessMessage('photo', uploadResult, { formatFileSize });
+    await bot.sendMessage(chatId, successMessage);
   } catch (error) {
     logServiceError('Error processing photo', error);
     bot.sendMessage(chatId, `❌ ${getSanitizedUserError('photo', error)}`);

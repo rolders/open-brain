@@ -6,7 +6,7 @@ COPY package*.json ./
 
 RUN npm ci --production
 
-COPY index.js ./
+COPY *.js ./
 
 USER node
 
