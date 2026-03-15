@@ -27,3 +27,6 @@ Thumbs.db
 
 # Local git worktrees
 .worktrees/
+
+# Local backups
+backups/
